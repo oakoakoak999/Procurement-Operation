@@ -1,0 +1,15 @@
+# Secrets — never commit
+.env
+
+# Dependencies — reinstall with: npm install
+node_modules/
+
+# Playwright internals
+.playwright/
+.playwright-cli/
+
+# Claude Code internals
+.claude/
+
+# Runtime data — not important to track
+knowledge.json
