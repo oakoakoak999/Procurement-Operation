@@ -17,9 +17,6 @@ const __dir      = dirname(fileURLToPath(import.meta.url));
 const TOKEN_FILE = join(__dir, '.gdrive-vault-token.json');
 const REDIRECT   = 'http://localhost:3000/callback';
 
-// Source and Drive target
-const VAULT_PATH     = 'C:\\Users\\uSeR\\Desktop\\Obsidian Vault';
-const DRIVE_FOLDER_ID = '11de3g5uVMrQJwUeluNpTrPvpCxSOBdbv';   // home PC root vault folder on Drive
 
 // ─── ENV ─────────────────────────────────────────────────────────────────────
 function loadEnv() {
@@ -182,6 +179,11 @@ async function uploadDirectory(drive, localPath, remoteFolderId, depth = 0) {
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 (async () => {
   try {
+    loadEnv();
+    const VAULT_PATH      = process.env.OBSIDIAN_VAULT_PATH;
+    const DRIVE_FOLDER_ID = process.env.OBSIDIAN_VAULT_FOLDER_ID || '11de3g5uVMrQJwUeluNpTrPvpCxSOBdbv';
+    if (!VAULT_PATH) throw new Error('OBSIDIAN_VAULT_PATH not set in .env');
+
     console.log('[VAULT] Starting full Obsidian Vault upload...');
     console.log(`[VAULT] Source : ${VAULT_PATH}`);
     console.log(`[VAULT] Target : Drive folder ${DRIVE_FOLDER_ID}\n`);

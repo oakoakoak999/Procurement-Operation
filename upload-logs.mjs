@@ -15,29 +15,11 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { URL } from 'url';
-import { hostname } from 'os';
 
 const __dir  = dirname(fileURLToPath(import.meta.url));
 const TOKEN_FILE  = join(__dir, '.gdrive-token.json');
 const REDIRECT    = 'http://localhost:3000/callback';
 
-// Per-machine config
-// Differentiated by hostname since both machines share the same USERNAME.
-const MACHINE_CONFIG = {
-  'PH-NB-OOD-400': {                                    // company laptop
-    obsidianUpload:   false,                             // vault already on Drive via G:\My Drive
-    claudeMdFolderId: '1wcoaA7DkU65fdxuEaghgLmTbi8lhu6l_',
-    claudeMd:         'C:\\Users\\Thanapol.ph\\CLAUDE.md',
-  },
-  'DESKTOP-KE76UMA': {                                  // home PC
-    obsidianUpload:   true,
-    obsidianFolderId: '1ZCkcEF3H-5BSh1fHGchmDNsEMO2DHhRt',
-    vaultDir:         'C:\\Users\\uSeR\\Desktop\\Obsidian Vault',
-    claudeMdFolderId: '11de3g5uVMrQJwUeluNpTrPvpCxSOBdbv',
-    claudeMd:         'C:\\Users\\uSeR\\CLAUDE.md',
-  },
-};
-const CONFIG = MACHINE_CONFIG[hostname().toUpperCase()];
 
 // ─── ENV ──────────────────────────────────────────────────────────────────────
 function loadEnv() {
@@ -180,21 +162,27 @@ async function uploadDirRecursive(drive, localDir, driveFolderId, stats) {
     const auth  = await authorize();
     const drive = google.drive({ version: 'v3', auth });
 
-    if (!CONFIG)
-      throw new Error(`Unknown machine '${hostname()}' — add it to MACHINE_CONFIG in upload-logs.mjs`);
+    loadEnv();
+    const VAULT_DIR          = process.env.OBSIDIAN_VAULT_PATH || '';
+    const OBSIDIAN_FOLDER_ID = process.env.OBSIDIAN_BRAIN_FOLDER_ID || '';
+    const CLAUDE_MD_FILE     = process.env.CLAUDE_MD_PATH;
+    const CLAUDE_FOLDER_ID   = process.env.CLAUDE_MD_FOLDER_ID;
 
-    // 1. Obsidian vault (home PC only)
-    if (CONFIG.obsidianUpload) {
+    if (!CLAUDE_MD_FILE || !CLAUDE_FOLDER_ID)
+      throw new Error('CLAUDE_MD_PATH / CLAUDE_MD_FOLDER_ID not set in .env');
+
+    // 1. Obsidian vault (only if configured in .env)
+    if (VAULT_DIR && OBSIDIAN_FOLDER_ID) {
       const stats = { uploaded: 0, replaced: 0 };
-      await uploadDirRecursive(drive, CONFIG.vaultDir, CONFIG.obsidianFolderId, stats);
+      await uploadDirRecursive(drive, VAULT_DIR, OBSIDIAN_FOLDER_ID, stats);
       console.log(`[GDRIVE] Obsidian done: ${stats.uploaded} uploaded, ${stats.replaced} replaced`);
     } else {
-      console.log('[GDRIVE] Obsidian: skipped (vault already on Drive)');
+      console.log('[GDRIVE] Obsidian: skipped (OBSIDIAN_VAULT_PATH not set in .env)');
     }
 
-    // 2. CLAUDE.md (both machines)
-    const claudeContent = readFileSync(CONFIG.claudeMd, 'utf8');
-    const result = await uploadSingleFile(drive, CONFIG.claudeMdFolderId, 'CLAUDE.md', claudeContent);
+    // 2. CLAUDE.md
+    const claudeContent = readFileSync(CLAUDE_MD_FILE, 'utf8');
+    const result = await uploadSingleFile(drive, CLAUDE_FOLDER_ID, 'CLAUDE.md', claudeContent);
     console.log(`[GDRIVE] CLAUDE.md: ${result}`);
 
   } catch (err) {

@@ -12,15 +12,12 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { URL } from 'url';
-import { hostname } from 'os';
 import { pipeline } from 'stream/promises';
 
 const __dir     = dirname(fileURLToPath(import.meta.url));
 const TOKEN_FILE = join(__dir, '.gdrive-token.json');
 const REDIRECT   = 'http://localhost:3000/callback';
 
-const DRIVE_VAULT_FOLDER_ID = '1ZCkcEF3H-5BSh1fHGchmDNsEMO2DHhRt';
-const LOCAL_VAULT_DIR       = 'C:\\Users\\uSeR\\Desktop\\Obsidian Vault';
 
 // ─── ENV ──────────────────────────────────────────────────────────────────────
 function loadEnv() {
@@ -120,8 +117,12 @@ async function downloadDirRecursive(drive, driveFolderId, localDir, stats) {
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 (async () => {
   try {
-    if (hostname().toUpperCase() !== 'DESKTOP-KE76UMA') {
-      console.log('[GDRIVE] Not home PC — skipping download (vault already on Drive).');
+    loadEnv();
+    const LOCAL_VAULT_DIR       = process.env.OBSIDIAN_VAULT_PATH;
+    const DRIVE_VAULT_FOLDER_ID = process.env.OBSIDIAN_BRAIN_FOLDER_ID || '1ZCkcEF3H-5BSh1fHGchmDNsEMO2DHhRt';
+
+    if (!LOCAL_VAULT_DIR) {
+      console.log('[GDRIVE] OBSIDIAN_VAULT_PATH not set in .env — skipping download.');
       process.exit(0);
     }
 
