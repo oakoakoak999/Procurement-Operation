@@ -1,5 +1,11 @@
 # Secrets — never commit
 .env
+.gdrive-token.json
+.gdrive-po-token.json
+.gsheets-token.json
+
+# Chrome debug profile (session-specific, not portable)
+.chrome-debug-profile/
 
 # Dependencies — reinstall with: npm install
 node_modules/
