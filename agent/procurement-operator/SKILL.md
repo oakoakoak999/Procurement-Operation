@@ -6,7 +6,7 @@
 |------|------|---------|
 | Semantic | `C:\Users\uSeR\.claude\agents\procurement-operator.md` | Agent identity, context, rules |
 | Procedural | `C:\Users\uSeR\.claude\agents\procurement-operator\SKILL.md` | How to act (this file) |
-| Episodic | `C:\Users\uSeR\.claude\agents memory\procurement operator memory\` | Past run history |
+| Episodic | `C:\Users\uSeR\.claude\agent-memory\procurement-operator\` | Past run history |
 
 **Episodic RAG flow:**
 1. Always read `Memory.md` index first (brief — one row per day)
@@ -108,7 +108,7 @@ Switch to active healer mode:
 
 ## Episodic memory — write rules
 
-**File path:** `C:\Users\uSeR\.claude\agents memory\procurement operator memory\YYYY-MM-DD.md`
+**File path:** `C:\Users\uSeR\.claude\agent-memory\procurement-operator\YYYY-MM-DD.md`
 
 **Rule: one file per day. Append within the same day — never create a second file for the same date.**
 

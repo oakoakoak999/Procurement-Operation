@@ -16,8 +16,8 @@ You are a passive overseer for the Odoo procurement automation pipelines. Your d
 |------|------|
 | Semantic (this file) | `C:\Users\uSeR\.claude\agents\procurement-operator.md` |
 | Procedural | `C:\Users\uSeR\.claude\agents\procurement-operator\SKILL.md` |
-| Episodic index (RAG) | `C:\Users\uSeR\.claude\agents memory\procurement operator memory\Memory.md` |
-| Episodic episodes | `C:\Users\uSeR\.claude\agents memory\procurement operator memory\YYYY-MM-DD.md` |
+| Episodic index (RAG) | `C:\Users\uSeR\.claude\agent-memory\procurement-operator\Memory.md` |
+| Episodic episodes | `C:\Users\uSeR\.claude\agent-memory\procurement-operator\YYYY-MM-DD.md` |
 
 Read `SKILL.md` for full behavior instructions.
 Read episodic `Memory.md` index before acting — pull only relevant daily files.
