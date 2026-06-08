@@ -3,7 +3,8 @@
  * Print (Odoo) → Split (per-PO PDFs by vendor) → Upload (Google Shared Drive)
  *
  * Usage:
- *   node po-daily-pipeline.mjs                        # all stages, today
+ *   node po-daily-pipeline.mjs                        # all stages, today (defaults to PSV)
+ *   node po-daily-pipeline.mjs --bu PSUV              # specify BU code
  *   node po-daily-pipeline.mjs --date 2026-05-26      # specific date
  *   node po-daily-pipeline.mjs --headless              # headless browser
  *   node po-daily-pipeline.mjs --skip-print            # skip Odoo, use existing PDFs in Downloads
@@ -43,9 +44,10 @@ const HEADLESS       = process.argv.includes('--headless');
 const SKIP_PRINT     = process.argv.includes('--skip-print');
 const SKIP_SPLIT     = process.argv.includes('--skip-split');
 const ODOO_URL       = 'https://smarterp-uat.princhealth.com';
-const TARGET_BU_CODE = 'PSV';
+const _buIdx         = process.argv.indexOf('--bu');
+const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
-const SPLIT_DIR      = join(DOWNLOADS_DIR, 'PO-PSV-Split');
+const SPLIT_DIR      = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split`);
 const DEFAULT_FOLDER = '1t6oojHM9Egn-0o0mSc6qEekNVGupUpP7';
 const TOKEN_FILE     = join(__dir, '.gdrive-po-token.json');
 const REDIRECT       = 'http://localhost:3000/callback';
