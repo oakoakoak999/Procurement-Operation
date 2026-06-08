@@ -19,3 +19,8 @@ node_modules/
 
 # Runtime data — not important to track
 knowledge.json
+
+# Drive sync scripts — belong in Obsidian vault tools, not this repo
+download-from-drive.mjs
+upload-logs.mjs
+upload-vault-full.mjs
