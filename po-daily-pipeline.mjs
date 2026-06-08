@@ -48,6 +48,12 @@ const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
 const SPLIT_DIR      = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split`);
+// BU codes that don't match their Odoo label prefix directly
+const BU_ODOO_PREFIX = {
+  PLPN1: '[PLPN:00059]',
+  PLPN2: '[PLPN:00071]',
+};
+
 // Order folder per BU — script auto-creates year subfolders (2026, 2027, …) inside
 const BU_ORDER_FOLDERS = {
   PPNP:  '1W-37wU86npJ1d_LqPqEkmGJ44pN8lAri',
@@ -133,7 +139,8 @@ async function stagePrint() {
           label: el.querySelector('.company_label')?.textContent?.trim() || '',
         }))
       );
-      const target = companies.find(c => c.label.startsWith(`[${TARGET_BU_CODE}:`));
+      const odooPrefix = BU_ODOO_PREFIX[TARGET_BU_CODE];
+      const target = companies.find(c => odooPrefix ? c.label.startsWith(odooPrefix) : c.label.startsWith(`[${TARGET_BU_CODE}:`));
       if (!target) throw new Error(`BU "${TARGET_BU_CODE}" not found in company list`);
       await page.click(`[data-company-id="${target.id}"] .log_into`);
       await page.waitForLoadState('load');

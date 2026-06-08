@@ -36,6 +36,12 @@ const PROFILE_KEY    = _pos[0];
 const TARGET_BU_CODE = _pos[1];
 if (!PROFILE_KEY || !TARGET_BU_CODE)
   throw new Error('Usage: node odoo_pr_to_po.mjs <profile> <BU_CODE> [--headless]\nProfiles: supply | medicine');
+
+// BU codes that don't match their Odoo label prefix directly
+const BU_ODOO_PREFIX = {
+  PLPN1: '[PLPN:00059]',
+  PLPN2: '[PLPN:00071]',
+};
 const _prof = PROFILES[PROFILE_KEY];
 if (!_prof) throw new Error(`Unknown profile "${PROFILE_KEY}". Valid: ${Object.keys(PROFILES).join(', ')}`);
 const TARGET_BUYER   = _prof.buyer;
@@ -266,7 +272,8 @@ async function switchBU(page) {
     }))
   );
 
-  const target = companies.find(c => c.label.startsWith(`[${TARGET_BU_CODE}:`));
+  const odooPrefix = BU_ODOO_PREFIX[TARGET_BU_CODE];
+  const target = companies.find(c => odooPrefix ? c.label.startsWith(odooPrefix) : c.label.startsWith(`[${TARGET_BU_CODE}:`));
   if (!target) throw new Error(`BU "${TARGET_BU_CODE}" not found in company list`);
 
   log(`Found BU: ${target.label}`);
