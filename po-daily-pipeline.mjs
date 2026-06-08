@@ -48,29 +48,27 @@ const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
 const SPLIT_DIR      = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split`);
-const BU_FOLDERS = {
-  2026: {
-    PPNP:  '1ROXD2w4MD-NuvQD3Ap0fIjohuxSnzLxT',
-    PSV:   '1t6oojHM9Egn-0o0mSc6qEekNVGupUpP7',
-    PPCH:  '1HFo3D7mnGY9e6Ep30IsTOMkktdWyrFDe',
-    PUTD:  '102Fx98hoQ3LbPg__2m8Wt5U6mofuUqIu',
-    PSUV:  '11K2bkoGMjLOPRz3znnXEKRIOASk9sKjT',
-    PUTH:  '1fjztPMWesvF9ozHE9F4xXS9nFHLtuqzN',
-    PLPN1: '1lHYvTumAhitICcCVHBaq-QntAd-XiXcW',
-    PSSK:  '1J0o19fqcAaVmVWbK9DrdBIfZ206ctZEj',
-    PCPN:  '17xARI2HUU56_omjqibEgxl_0gl2cikRq',
-    PUBN:  '1hDOk5CGqECSWNyXLuVVGKMYoV3_S_a1E',
-    KBKJ:  '1eBF2CQtAyspHPvp93w-MnL0O0_6Jd2Td',
-    PSNK:  '1RI54ZLlxjIuW6lEwxWF2dqWAA-ehAPGM',
-    PPRP:  '1yWHcV3V3kBfE1Dy7tfWBseUotqXDDL6y',
-    PMDH:  '1Mjijjt3ny0z5V29k7_3FQD6xMbEt_Hzr',
-    PLPN2: '1dH4deuZEyUMBo9gVseEvnnMjoarXzwN2',
-    PKPP:  '1zhZmjuW6-JhdBDQspPyx0UPitD5uC_JC',
-    PKAN:  '1JgxRz1xM0nb6PDgcARSDTLBSyzFedYNQ',
-    PPAT2: '19p0t5mwJ_AEl2iNS16vcZ4MHyKShfYI2',
-    PPAT1: '12tzSOuphH417Ng53m2ljL1MXJmo7yAsD',
-  },
-  // 2027: { ... }
+// Order folder per BU — script auto-creates year subfolders (2026, 2027, …) inside
+const BU_ORDER_FOLDERS = {
+  PPNP:  '1W-37wU86npJ1d_LqPqEkmGJ44pN8lAri',
+  PSV:   '1_DbjEAFbTEdhgrHHBxSt2Vpo6JlRijqg',
+  PPCH:  '1BF3AfhqTjnmZMaQQqnsJFI6eWqSO6WAN',
+  PUTD:  '1s7dlLN2mAm3UXH7kd3uarDZ1xQGOMNLI',
+  PSUV:  '1WTCbRRujdsmfM1zgNwPrqq1pNP2AP07x',
+  PUTH:  '1RQegINolIpTbz4gUub5FMhWx_jebwz7d',
+  PLPN1: '1GMHgOcugpaRIP-Mxbrt4ul3TJh0RK18c',
+  PSSK:  '1lSFOXHq_tv5t3BAfPoVqQmIA8i2GGAIb',
+  PCPN:  '1rE90pC60SlxtW14OVAF5YP8Lb06P5LnW',
+  PUBN:  '1PU-w9_sZEAQ_VXhvosNw8qzO2nAwejPH',
+  KBKJ:  '1Z155u0ZYn64RX75--Rbd5KjByfg-Yt98',
+  PSNK:  '1SqA9E92DehID22_XL7Mcyao71H9_7J8j',
+  PPRP:  '1BNxZdyAA8Dv1VsyKgGf6qYFAJA5_AXI4',
+  PMDH:  '1vMIApeSo0HiomBv-Z2cvRNBsy74KqYJH',
+  PLPN2: '1AWjihoFeMrDVcWKBuBGEYwjE1q0aoR8h',
+  PKPP:  '1ntq7NiaK1BCpVfU1o34H2hRZy2NezoAS',
+  PKAN:  '12T7CG3FFGL9KAcmOogeanUyI2Q6h214v',
+  PPAT2: '1tAqRMt3nAIumr_OmAhz-sqa8S71rHaQ7',
+  PPAT1: '12HeutjydP2uUVIpfM1GcvImWfr7-6-gW',
 };
 const TOKEN_FILE     = join(__dir, '.gdrive-po-token.json');
 const REDIRECT       = 'http://localhost:3000/callback';
@@ -81,10 +79,10 @@ const TARGET_DATE  = `${_d.getDate()} ${_d.toLocaleString('en-GB', { month: 'sho
 const TARGET_MONTH = `${_d.toLocaleString('en-GB', { month: 'long' })} ${_d.getFullYear()}`;
 const DATE_SLUG    = TARGET_DATE.replace(/ /g, '-');
 
-const _folderIdx   = process.argv.indexOf('--upload-folder');
-const DRIVE_FOLDER = _folderIdx !== -1
+const _folderIdx      = process.argv.indexOf('--upload-folder');
+const ORDER_FOLDER    = _folderIdx !== -1
   ? process.argv[_folderIdx + 1]
-  : (BU_FOLDERS[_d.getFullYear()]?.[TARGET_BU_CODE] ?? (() => { throw new Error(`No Drive folder configured for BU "${TARGET_BU_CODE}" in ${_d.getFullYear()}`); })());
+  : (BU_ORDER_FOLDERS[TARGET_BU_CODE] ?? (() => { throw new Error(`No Drive folder configured for BU "${TARGET_BU_CODE}"`); })());
 
 const USERNAME = process.env.ODOO_USERNAME;
 const PASSWORD = process.env.ODOO_PASSWORD;
@@ -451,11 +449,15 @@ async function stageUpload() {
   const auth  = await authorizeGDrive();
   const drive = google.drive({ version: 'v3', auth });
 
+  const year       = String(_d.getFullYear());
+  const yearFolder = await findOrCreateFolder(drive, year, ORDER_FOLDER);
+  log('UPLOAD', `Year folder: ${year} (${yearFolder})`);
+
   const vendorDirs = readdirSync(SPLIT_DIR, { withFileTypes: true })
     .filter(d => d.isDirectory())
     .map(d => d.name);
 
-  log('UPLOAD', `${vendorDirs.length} vendor folder(s) → Drive:${DRIVE_FOLDER}`);
+  log('UPLOAD', `${vendorDirs.length} vendor folder(s) → Drive:${ORDER_FOLDER}/${year}`);
   let totalUploaded = 0, totalSkipped = 0;
 
   for (const vendorName of vendorDirs) {
@@ -463,7 +465,7 @@ async function stageUpload() {
     const pdfs = readdirSync(vendorLocalPath).filter(f => extname(f).toLowerCase() === '.pdf');
     if (!pdfs.length) continue;
 
-    const vendorDriveId  = await findOrCreateFolder(drive, vendorName, DRIVE_FOLDER);
+    const vendorDriveId  = await findOrCreateFolder(drive, vendorName, yearFolder);
     const existingOnDrive = await getExistingFiles(drive, vendorDriveId);
 
     for (const pdf of pdfs) {
@@ -491,7 +493,7 @@ async function stageUpload() {
 
 (async () => {
   console.log(`\n── PO Daily Pipeline ── ${TARGET_DATE} ${'─'.repeat(Math.max(0, 40 - TARGET_DATE.length))}`);
-  console.log(`   Print: ${SKIP_PRINT ? 'SKIP' : 'ON'} | Split: ${SKIP_SPLIT ? 'SKIP' : 'ON'} | Drive: ${DRIVE_FOLDER}`);
+  console.log(`   Print: ${SKIP_PRINT ? 'SKIP' : 'ON'} | Split: ${SKIP_SPLIT ? 'SKIP' : 'ON'} | Drive: ${ORDER_FOLDER}`);
   console.log(`${'─'.repeat(56)}\n`);
 
   let pdfFiles;
