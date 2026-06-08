@@ -67,8 +67,8 @@ const BU_ORDER_FOLDERS = {
   PLPN2: '1AWjihoFeMrDVcWKBuBGEYwjE1q0aoR8h',
   PKPP:  '1ntq7NiaK1BCpVfU1o34H2hRZy2NezoAS',
   PKAN:  '12T7CG3FFGL9KAcmOogeanUyI2Q6h214v',
-  PPAT2: '1tAqRMt3nAIumr_OmAhz-sqa8S71rHaQ7',
-  PPAT1: '12HeutjydP2uUVIpfM1GcvImWfr7-6-gW',
+  PKRT:  '1tAqRMt3nAIumr_OmAhz-sqa8S71rHaQ7',
+  PPAT:  '12HeutjydP2uUVIpfM1GcvImWfr7-6-gW',
 };
 const TOKEN_FILE     = join(__dir, '.gdrive-po-token.json');
 const REDIRECT       = 'http://localhost:3000/callback';
