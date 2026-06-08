@@ -48,7 +48,27 @@ const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
 const SPLIT_DIR      = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split`);
-const DEFAULT_FOLDER = '1t6oojHM9Egn-0o0mSc6qEekNVGupUpP7';
+const BU_FOLDERS = {
+  PPNP:  '1ROXD2w4MD-NuvQD3Ap0fIjohuxSnzLxT',
+  PSV:   '1t6oojHM9Egn-0o0mSc6qEekNVGupUpP7',
+  PPCH:  '1HFo3D7mnGY9e6Ep30IsTOMkktdWyrFDe',
+  PUTD:  '102Fx98hoQ3LbPg__2m8Wt5U6mofuUqIu',
+  PSUV:  '11K2bkoGMjLOPRz3znnXEKRIOASk9sKjT',
+  PUTH:  '1fjztPMWesvF9ozHE9F4xXS9nFHLtuqzN',
+  PLPN1: '1lHYvTumAhitICcCVHBaq-QntAd-XiXcW',
+  PSSK:  '1J0o19fqcAaVmVWbK9DrdBIfZ206ctZEj',
+  PCPN:  '17xARI2HUU56_omjqibEgxl_0gl2cikRq',
+  PUBN:  '1hDOk5CGqECSWNyXLuVVGKMYoV3_S_a1E',
+  KBKJ:  '1eBF2CQtAyspHPvp93w-MnL0O0_6Jd2Td',
+  PSNK:  '1RI54ZLlxjIuW6lEwxWF2dqWAA-ehAPGM',
+  PPRP:  '1yWHcV3V3kBfE1Dy7tfWBseUotqXDDL6y',
+  PMDH:  '1Mjijjt3ny0z5V29k7_3FQD6xMbEt_Hzr',
+  PLPN2: '1dH4deuZEyUMBo9gVseEvnnMjoarXzwN2',
+  PKPP:  '1zhZmjuW6-JhdBDQspPyx0UPitD5uC_JC',
+  PKAN:  '1JgxRz1xM0nb6PDgcARSDTLBSyzFedYNQ',
+  PPAT2: '19p0t5mwJ_AEl2iNS16vcZ4MHyKShfYI2',
+  PPAT1: '12tzSOuphH417Ng53m2ljL1MXJmo7yAsD',
+};
 const TOKEN_FILE     = join(__dir, '.gdrive-po-token.json');
 const REDIRECT       = 'http://localhost:3000/callback';
 
@@ -59,7 +79,9 @@ const TARGET_MONTH = `${_d.toLocaleString('en-GB', { month: 'long' })} ${_d.getF
 const DATE_SLUG    = TARGET_DATE.replace(/ /g, '-');
 
 const _folderIdx   = process.argv.indexOf('--upload-folder');
-const DRIVE_FOLDER = _folderIdx !== -1 ? process.argv[_folderIdx + 1] : DEFAULT_FOLDER;
+const DRIVE_FOLDER = _folderIdx !== -1
+  ? process.argv[_folderIdx + 1]
+  : (BU_FOLDERS[TARGET_BU_CODE] ?? (() => { throw new Error(`No Drive folder configured for BU "${TARGET_BU_CODE}"`); })());
 
 const USERNAME = process.env.ODOO_USERNAME;
 const PASSWORD = process.env.ODOO_PASSWORD;
