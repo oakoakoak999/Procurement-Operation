@@ -48,10 +48,26 @@ const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
 const SPLIT_DIR      = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split`);
-// BU codes that don't match their Odoo label prefix directly
 const BU_ODOO_PREFIX = {
+  PPNP:  '[PPNP:00051]',
+  PSV:   '[PSV:00052]',
+  PPCH:  '[PPCH:00053]',
+  PUTD:  '[PUTD:00055]',
+  PSUV:  '[PSUV:00057]',
+  PUTH:  '[PUTH:00058]',
   PLPN1: '[PLPN:00059]',
+  PSSK:  '[PSSK:00061]',
+  PCPN:  '[PCPN:00062]',
+  PUBN:  '[PUBN:00064]',
+  KBKJ:  '[KBKJ:00065]',
+  PSNK:  '[PSNK:00067]',
+  PPRP:  '[PPRP:00068]',
+  PMDH:  '[PMDH:00069]',
   PLPN2: '[PLPN:00071]',
+  PKPP:  '[PKPP:00072]',
+  PKAN:  '[PKAN:00073]',
+  PKRT:  '[PKRT:00074]',
+  PPAT:  '[PPAT:00075]',
 };
 
 // Order folder per BU — script auto-creates year subfolders (2026, 2027, …) inside
@@ -140,7 +156,8 @@ async function stagePrint() {
         }))
       );
       const odooPrefix = BU_ODOO_PREFIX[TARGET_BU_CODE];
-      const target = companies.find(c => odooPrefix ? c.label.startsWith(odooPrefix) : c.label.startsWith(`[${TARGET_BU_CODE}:`));
+      if (!odooPrefix) throw new Error(`Unknown BU "${TARGET_BU_CODE}". Valid: ${Object.keys(BU_ODOO_PREFIX).join(', ')}`);
+      const target = companies.find(c => c.label.startsWith(odooPrefix));
       if (!target) throw new Error(`BU "${TARGET_BU_CODE}" not found in company list`);
       await page.click(`[data-company-id="${target.id}"] .log_into`);
       await page.waitForLoadState('load');
