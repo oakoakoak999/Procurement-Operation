@@ -1,5 +1,5 @@
 /**
- * po-daily-pipeline.mjs — Full PO pipeline in one script
+ * po-daily-pipeline.mjs — Full PO pipeline in one script (v2)
  * Print (Odoo) → Split (per-PO PDFs by vendor) → Upload (Google Shared Drive)
  *
  * Usage:
@@ -10,6 +10,18 @@
  *   node po-daily-pipeline.mjs --skip-print            # skip Odoo, use existing PDFs in Downloads
  *   node po-daily-pipeline.mjs --skip-split            # skip split, use existing split dir
  *   node po-daily-pipeline.mjs --upload-folder <id>   # override Google Drive folder ID
+ *
+ * v2 changes vs original:
+ * - FIX: vendor-less split PDFs (SPLIT_DIR root) are now uploaded to the year
+ *   folder on Drive with a warning, instead of being silently skipped
+ * - FIX: vendor carry-forward resets at PO boundaries — a PO whose vendor line
+ *   fails to parse no longer inherits the previous PO's vendor
+ * - FIX: vendor folder names sanitized for invalid filesystem characters
+ * - FIX: OAuth timeout timer cleared on success (no 5-min exit delay on first run)
+ * - FIX: token-refresh listener wired on first auth too, not only on saved-token runs
+ * - FIX: --date validated; invalid input now errors instead of "no POs found"
+ * - Pages before the first detected PO number are now counted and logged
+ * - Removed unneeded `URL as NodeURL` import (URL is a Node global)
  */
 
 import { chromium } from 'playwright';
@@ -24,7 +36,6 @@ import { fileURLToPath } from 'url';
 import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
-import { URL as NodeURL } from 'url';
 
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -97,6 +108,8 @@ const REDIRECT       = 'http://localhost:3000/callback';
 
 const _dateIdx     = process.argv.indexOf('--date');
 const _d           = _dateIdx !== -1 ? new Date(process.argv[_dateIdx + 1]) : new Date();
+if (isNaN(_d.getTime()))
+  throw new Error(`Invalid --date "${process.argv[_dateIdx + 1]}" — expected e.g. 2026-05-26`);
 const TARGET_DATE  = `${_d.getDate()} ${_d.toLocaleString('en-GB', { month: 'short' })} ${_d.getFullYear()}`;
 const TARGET_MONTH = `${_d.toLocaleString('en-GB', { month: 'long' })} ${_d.getFullYear()}`;
 const DATE_SLUG    = TARGET_DATE.replace(/ /g, '-');
@@ -332,12 +345,17 @@ async function extractAllPageInfo(buf) {
   return pages;
 }
 
+// Strip characters invalid in Windows folder names
+function sanitizeFolderName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, '-').trim();
+}
+
 function resolveVendorFolder(baseDir, vendorCode, vendorName) {
   let entries = [];
   try { entries = readdirSync(baseDir, { withFileTypes: true }); } catch {}
   const existing = entries.find(e => e.isDirectory() && e.name.includes(`(${vendorCode})`));
   if (existing) return join(baseDir, existing.name);
-  const folderPath = join(baseDir, `${vendorName} (${vendorCode})`);
+  const folderPath = join(baseDir, sanitizeFolderName(`${vendorName} (${vendorCode})`));
   mkdirSync(folderPath, { recursive: true });
   return folderPath;
 }
@@ -347,12 +365,21 @@ async function splitOnePdf(inputPath) {
   const buf   = readFileSync(inputPath);
   const pages = await extractAllPageInfo(buf);
 
+  // Forward-fill PO and vendor across continuation pages.
+  // Vendor resets at each new PO so a PO with an unparseable vendor line
+  // does NOT inherit the previous PO's vendor (would file it under the wrong vendor).
   let last = { po: null, vendorCode: null, vendorName: null };
   for (const p of pages) {
+    if (p.po && p.po !== last.po) {
+      last = { po: p.po, vendorCode: null, vendorName: null };
+    }
     if (p.po)         last.po         = p.po;         else p.po         = last.po;
     if (p.vendorCode) last.vendorCode = p.vendorCode; else p.vendorCode = last.vendorCode;
     if (p.vendorName) last.vendorName = p.vendorName; else p.vendorName = last.vendorName;
   }
+
+  const orphanPages = pages.filter(p => !p.po).length;
+  if (orphanPages > 0) log('SPLIT', `  WARNING: ${orphanPages} page(s) before first PO number — dropped`);
 
   const groups = new Map();
   for (const p of pages) {
@@ -380,6 +407,7 @@ async function splitOnePdf(inputPath) {
 
     let folder = SPLIT_DIR;
     if (vendorCode && vendorName) folder = resolveVendorFolder(SPLIT_DIR, vendorCode, vendorName);
+    else log('SPLIT', `  WARNING: ${poNum} has no vendor info — saved to split root`);
 
     writeFileSync(join(folder, filename), pdfBytes);
     log('SPLIT', `  ${filename}${clearing ? ' [Clearing]' : ''}`);
@@ -407,28 +435,32 @@ async function authorizeGDrive() {
 
   const auth = new google.auth.OAuth2(GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, REDIRECT);
 
+  // Persist refreshed tokens on every run (saved-token and first-auth alike)
+  auth.on('tokens', tokens => {
+    const saved = existsSync(TOKEN_FILE) ? JSON.parse(readFileSync(TOKEN_FILE, 'utf8')) : {};
+    writeFileSync(TOKEN_FILE, JSON.stringify({ ...saved, ...tokens }, null, 2));
+  });
+
   if (existsSync(TOKEN_FILE)) {
     auth.setCredentials(JSON.parse(readFileSync(TOKEN_FILE, 'utf8')));
-    auth.on('tokens', tokens => {
-      const saved = JSON.parse(readFileSync(TOKEN_FILE, 'utf8'));
-      writeFileSync(TOKEN_FILE, JSON.stringify({ ...saved, ...tokens }, null, 2));
-    });
     return auth;
   }
 
   const url = auth.generateAuthUrl({ access_type: 'offline', scope: ['https://www.googleapis.com/auth/drive'] });
   console.log('\n[UPLOAD] Auth needed. Open this URL in your browser:\n\n' + url + '\n');
   const code = await new Promise((resolve, reject) => {
+    let timer;
     const server = createServer((req, res) => {
-      const u = new NodeURL(req.url, 'http://localhost:3000');
+      const u = new URL(req.url, 'http://localhost:3000');
       if (u.pathname === '/callback') {
         res.end('<h1>Authorized! You can close this tab.</h1>');
+        clearTimeout(timer);
         server.close();
         resolve(u.searchParams.get('code'));
       }
     });
     server.listen(3000);
-    setTimeout(() => { server.close(); reject(new Error('Auth timeout (5 min)')); }, 300_000);
+    timer = setTimeout(() => { server.close(); reject(new Error('Auth timeout (5 min)')); }, 300_000);
   });
 
   const { tokens } = await auth.getToken(code);
@@ -469,6 +501,30 @@ async function getExistingFiles(drive, folderId) {
   return existing;
 }
 
+async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
+  const pdfs = readdirSync(localDir, { withFileTypes: true })
+    .filter(e => e.isFile() && extname(e.name).toLowerCase() === '.pdf')
+    .map(e => e.name);
+  if (!pdfs.length) return;
+
+  const existingOnDrive = await getExistingFiles(drive, driveFolderId);
+
+  for (const pdf of pdfs) {
+    if (existingOnDrive.has(pdf)) {
+      counters.skipped++;
+      continue;
+    }
+    await drive.files.create({
+      requestBody: { name: pdf, parents: [driveFolderId] },
+      media: { mimeType: 'application/pdf', body: createReadStream(join(localDir, pdf)) },
+      fields: 'id',
+      supportsAllDrives: true,
+    });
+    counters.uploaded++;
+    process.stdout.write(`\r[UPLOAD] ${counters.uploaded} uploaded, ${counters.skipped} skipped...`);
+  }
+}
+
 async function stageUpload() {
   const auth  = await authorizeGDrive();
   const drive = google.drive({ version: 'v3', auth });
@@ -477,38 +533,25 @@ async function stageUpload() {
   const yearFolder = await findOrCreateFolder(drive, year, ORDER_FOLDER);
   log('UPLOAD', `Year folder: ${year} (${yearFolder})`);
 
-  const vendorDirs = readdirSync(SPLIT_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory())
-    .map(d => d.name);
+  const entries    = readdirSync(SPLIT_DIR, { withFileTypes: true });
+  const vendorDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
+  const rootPdfs   = entries.filter(e => e.isFile() && extname(e.name).toLowerCase() === '.pdf');
 
   log('UPLOAD', `${vendorDirs.length} vendor folder(s) → Drive:${ORDER_FOLDER}/${year}`);
-  let totalUploaded = 0, totalSkipped = 0;
+  const counters = { uploaded: 0, skipped: 0 };
 
   for (const vendorName of vendorDirs) {
-    const vendorLocalPath = join(SPLIT_DIR, vendorName);
-    const pdfs = readdirSync(vendorLocalPath).filter(f => extname(f).toLowerCase() === '.pdf');
-    if (!pdfs.length) continue;
-
-    const vendorDriveId  = await findOrCreateFolder(drive, vendorName, yearFolder);
-    const existingOnDrive = await getExistingFiles(drive, vendorDriveId);
-
-    for (const pdf of pdfs) {
-      if (existingOnDrive.has(pdf)) {
-        totalSkipped++;
-        continue;
-      }
-      await drive.files.create({
-        requestBody: { name: pdf, parents: [vendorDriveId] },
-        media: { mimeType: 'application/pdf', body: createReadStream(join(vendorLocalPath, pdf)) },
-        fields: 'id',
-        supportsAllDrives: true,
-      });
-      totalUploaded++;
-      process.stdout.write(`\r[UPLOAD] ${totalUploaded} uploaded, ${totalSkipped} skipped...`);
-    }
+    const vendorDriveId = await findOrCreateFolder(drive, vendorName, yearFolder);
+    await uploadDirToDrive(drive, join(SPLIT_DIR, vendorName), vendorDriveId, counters);
   }
 
-  console.log(`\n[UPLOAD] Done — ${totalUploaded} uploaded, ${totalSkipped} already existed (skipped)`);
+  // Vendor-less PDFs in the split root: upload to the year folder so nothing is lost
+  if (rootPdfs.length > 0) {
+    log('UPLOAD', `WARNING: ${rootPdfs.length} PDF(s) without vendor folder — uploading to year folder root`);
+    await uploadDirToDrive(drive, SPLIT_DIR, yearFolder, counters);
+  }
+
+  console.log(`\n[UPLOAD] Done — ${counters.uploaded} uploaded, ${counters.skipped} already existed (skipped)`);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
