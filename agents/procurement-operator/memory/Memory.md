@@ -5,4 +5,5 @@
 
 | Date | Profiles Run | Notable |
 |------|-------------|---------|
+| 2026-06-10 | PO-Daily PUBN | No POs found (0 printed) |
 
