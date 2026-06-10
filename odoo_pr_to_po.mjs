@@ -1,12 +1,22 @@
 /**
- * ODOO PR → PO Workflow Automation
+ * ODOO PR → PO Workflow Automation (v2)
  * BU: PSV | Credentials loaded from .env
  * Exports Generate PR to PO (SUPPLY_BUYER) and appends to Log file
+ *
+ * v2 changes vs original:
+ * - Removed dead code: launchChrome(), findLogFile(), logPath threading, duplicate fs import
+ * - Simplified operator layer: withRetry() replaces CP/structuredLog/diagnose framework
+ * - Fixed: checkpoint C now actually re-navigates on retry (attempt was never wired)
+ * - Fixed: export route handler unregistered after capture (no stacking on retry)
+ * - Fixed: Tax incl. parsing strips commas (consistent with dedup normalization)
+ * - Fixed: PLPN1/PLPN2 resolved from full company prefix, not just letters
+ * - Changed: run is marked WARN (not SUCCESS) when reference sheet is unreachable
+ *   and rows are appended without validation
  */
 
 import { chromium } from 'playwright';
 import XLSX from 'xlsx';
-import { existsSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
@@ -58,6 +68,10 @@ const BU_ODOO_PREFIX = {
   PKRT:  '[PKRT:00074]',
   PPAT:  '[PPAT:00075]',
 };
+// Inverse map: '[PLPN:00059]' → 'PLPN1' — distinguishes BUs sharing the same letters
+const PREFIX_TO_BU = Object.fromEntries(
+  Object.entries(BU_ODOO_PREFIX).map(([code, prefix]) => [prefix, code])
+);
 const _prof = PROFILES[PROFILE_KEY];
 if (!_prof) throw new Error(`Unknown profile "${PROFILE_KEY}". Valid: ${Object.keys(PROFILES).join(', ')}`);
 const TARGET_BUYER   = _prof.buyer;
@@ -78,10 +92,6 @@ const COL_NAME_OVERRIDES = {
 };
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-
-function findLogFile() {
-  return null; // log is now in Google Sheets (GSHEET_LOG_ID)
-}
 
 function parseCSVLine(line) {
   const cells = [];
@@ -216,11 +226,14 @@ function log(msg) {
   console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
 }
 
-// ─── STEP 1 & 2: LAUNCH & CONNECT ────────────────────────────────────────────
-async function launchChrome() {
-  // no-op: browser is launched directly by connectAndNavigate()
+// Resolve BU code from a Company cell like "[PLPN:00059] Princ Lampang ..."
+// Falls back to the letters inside brackets if the full prefix isn't in the map.
+function buFromCompany(company) {
+  const prefix = company.match(/^\[[A-Z]+:\d+\]/)?.[0];
+  return (prefix && PREFIX_TO_BU[prefix]) || company.match(/\[([A-Z]+):/)?.[1] || '';
 }
 
+// ─── STEP 1: LAUNCH & CONNECT ────────────────────────────────────────────────
 async function connectAndNavigate() {
   log('Launching Chrome...');
   const browser  = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
@@ -229,7 +242,7 @@ async function connectAndNavigate() {
   return { browser, context, page };
 }
 
-// ─── STEP 3: SELECT DATABASE ──────────────────────────────────────────────────
+// ─── STEP 2: SELECT DATABASE ──────────────────────────────────────────────────
 async function selectDatabase(page) {
   log('Navigating to database selector...');
   await page.goto(DB_SELECTOR_URL);
@@ -241,7 +254,7 @@ async function selectDatabase(page) {
   log(`Database selected, URL: ${page.url()}`);
 }
 
-// ─── STEP 4: LOGIN ────────────────────────────────────────────────────────────
+// ─── STEP 3: LOGIN ────────────────────────────────────────────────────────────
 async function login(page) {
   if (!page.url().includes('/login')) {
     log('Already logged in — skipping login');
@@ -256,7 +269,7 @@ async function login(page) {
   log('Logged in');
 }
 
-// ─── STEP 5: SWITCH BU ────────────────────────────────────────────────────────
+// ─── STEP 4: SWITCH BU ────────────────────────────────────────────────────────
 async function switchBU(page) {
   log(`Switching BU to ${TARGET_BU_CODE}...`);
 
@@ -300,7 +313,7 @@ async function switchBU(page) {
   log(`Switched to ${TARGET_BU_CODE}`);
 }
 
-// ─── STEP 6: NAVIGATE TO GENERATE PR TO PO ───────────────────────────────────
+// ─── STEP 5: NAVIGATE TO GENERATE PR TO PO ───────────────────────────────────
 async function navigateToPRtoPO(page) {
   log('Waiting for navbar to be ready...');
   await page.waitForSelector('.o_navbar_apps_menu button', { timeout: 30000 });
@@ -321,7 +334,7 @@ async function navigateToPRtoPO(page) {
   log('On Generate PR to PO page');
 }
 
-// ─── STEP 7: REMOVE DEFAULT FILTER ───────────────────────────────────────────
+// ─── STEP 6: REMOVE DEFAULT FILTER ───────────────────────────────────────────
 async function removeFilter(page) {
   await page.waitForTimeout(1500);
   const facet = page.locator('.o_searchview_facet').filter({ hasText: 'Generate PR to PO' });
@@ -335,7 +348,7 @@ async function removeFilter(page) {
   }
 }
 
-// ─── STEP 8: GROUP BY BUYER ───────────────────────────────────────────────────
+// ─── STEP 7: GROUP BY BUYER ───────────────────────────────────────────────────
 async function groupByBuyer(page) {
   log('Adding Group By: Buyer...');
   await page.click('.o_searchview_dropdown_toggler');
@@ -347,7 +360,7 @@ async function groupByBuyer(page) {
   log('Grouped by Buyer');
 }
 
-// ─── STEP 9: CLICK SUPPLY_BUYER ───────────────────────────────────────────────
+// ─── STEP 8: CLICK SUPPLY_BUYER ───────────────────────────────────────────────
 async function clickSupplyBuyer(page) {
   log(`Clicking ${TARGET_BUYER} group...`);
   await page.waitForTimeout(1500);
@@ -369,7 +382,7 @@ async function clickSupplyBuyer(page) {
   return true;
 }
 
-// ─── STEP 10: EXPORT XLSX ─────────────────────────────────────────────────────
+// ─── STEP 9: EXPORT XLSX ─────────────────────────────────────────────────────
 async function exportXLSX(page) {
   log('Selecting all items...');
   await page.locator('thead .o_list_record_selector input[type="checkbox"]').click();
@@ -386,11 +399,11 @@ async function exportXLSX(page) {
   await page.waitForTimeout(300);
 
   // Intercept the export response via network route
-  const { writeFileSync } = await import('fs');
   const filePath = `${DOWNLOAD_PATH}\\odoo_export_temp.xlsx`;
+  const ROUTE_URL = '**/web/export/xlsx';
   let captured = false;
 
-  await page.route('**/web/export/xlsx', async (route) => {
+  await page.route(ROUTE_URL, async (route) => {
     const response = await route.fetch();
     const body = await response.body();
     writeFileSync(filePath, body);
@@ -400,14 +413,19 @@ async function exportXLSX(page) {
     await route.fulfill({ status: 200, contentType: 'text/html', body: '<html></html>' });
   });
 
-  await page.click('.o_export_data_dialog .o_select_button');
+  try {
+    await page.click('.o_export_data_dialog .o_select_button');
 
-  // Wait for route to capture the file
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    if (captured) break;
+    // Wait for route to capture the file
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (captured) break;
+    }
+    if (!captured) throw new Error('Export request not captured — check network route');
+  } finally {
+    // Unregister so retries don't stack duplicate handlers
+    await page.unroute(ROUTE_URL).catch(() => {});
   }
-  if (!captured) throw new Error('Export request not captured — check network route');
 
   log(`Saved export to: ${filePath}`);
 
@@ -422,8 +440,8 @@ async function exportXLSX(page) {
   return { filePath };
 }
 
-// ─── STEP 11: GET NEW ROWS (dedup only — no write yet) ───────────────────────
-async function appendToLog(exportPath, _logPath) {
+// ─── STEP 10: GET NEW ROWS (dedup only — no write yet) ───────────────────────
+async function appendToLog(exportPath) {
   log('Reading export file...');
   const srcWb      = XLSX.readFile(exportPath);
   const srcSheet   = srcWb.Sheets[srcWb.SheetNames[0]];
@@ -497,10 +515,10 @@ async function appendToLog(exportPath, _logPath) {
   return { newRows, headers: dstHeaders, skipped: srcData.length - newRows.length, exported: srcData.length };
 }
 
-// ─── STEP 12: VALIDATE (VENDOR + MIN ORDER) THEN APPEND ─────────────────────
+// ─── STEP 11: VALIDATE (VENDOR + MIN ORDER) THEN APPEND ─────────────────────
 async function validateAndAppend(newRows, headers) {
   if (newRows.length === 0) {
-    return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '' };
+    return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: false };
   }
 
   log('Fetching vendor & minimum order reference from Google Sheet...');
@@ -515,7 +533,7 @@ async function validateAndAppend(newRows, headers) {
       valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
       requestBody: { values: newRows },
     });
-    return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '' };
+    return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true };
   }
   log(`Reference sheet loaded: ${refRows.length} rows`);
 
@@ -559,7 +577,7 @@ async function validateAndAppend(newRows, headers) {
       const productRaw = (row[productIdx] || '').toString();
       const company    = (row[companyIdx] || '').toString();
       const vendorRaw  = vendorIdx >= 0 ? (row[vendorIdx] || '').toString().trim() : '';
-      const buCode     = company.match(/\[([A-Z]+):/)?.[1] || '';
+      const buCode     = buFromCompany(company);
       const itemCode   = productRaw.match(/^\[(\d+)\]/)?.[1];
       if (!itemCode) continue;
 
@@ -596,8 +614,8 @@ async function validateAndAppend(newRows, headers) {
         const productRaw = (row[productIdx] || '').toString();
         const company    = (row[companyIdx] || '').toString();
         const vendorRaw  = vendorIdx >= 0 ? (row[vendorIdx] || '').toString().trim() : '';
-        const taxIncl    = parseFloat(row[taxIdx]) || 0;
-        const buCode     = company.match(/\[([A-Z]+):/)?.[1] || '';
+        const taxIncl    = parseFloat(String(row[taxIdx] ?? '').replace(/,/g, '')) || 0;
+        const buCode     = buFromCompany(company);
         const itemCode   = productRaw.match(/^\[(\d+)\]/)?.[1];
         if (!itemCode) continue;
 
@@ -654,10 +672,11 @@ async function validateAndAppend(newRows, headers) {
     minOrder:  minOrderFailCount,
     items:     rejectedItems.join(', '),
     reasons:   rejectedReasons.join('; '),
+    validationSkipped: false,
   };
 }
 
-// ─── STEP 13: CLEANUP ────────────────────────────────────────────────────────
+// ─── STEP 12: CLEANUP ────────────────────────────────────────────────────────
 function cleanup({ filePath }) {
   try {
     unlinkSync(filePath);
@@ -676,153 +695,110 @@ const RUN_ID = (() => {
   return `${n.getFullYear()}${p(n.getMonth()+1)}${p(n.getDate())}-${p(n.getHours())}${p(n.getMinutes())}`;
 })();
 
-const CP = {
-  A: { name: 'A', steps: '1–3',   desc: 'browser + DB ready' },
-  B: { name: 'B', steps: '4–6',   desc: 'logged in + BU selected' },
-  C: { name: 'C', steps: '7–10',  desc: 'navigation + export' },
-  D: { name: 'D', steps: '11–13', desc: 'post-export processing' },
-};
+let currentStep = '?';
+function step(s) { currentStep = s; log(`── ${s}`); }
 
 class EarlyExit extends Error {
-  constructor(reason, step) {
+  constructor(reason, atStep) {
     super(reason);
     this.isEarlyExit = true;
-    this.failedStep  = step;
+    this.failedStep  = atStep;
   }
 }
 
-function structuredLog({ step, status, severity, type, message, confidence, checkpoint, recovery, action }) {
-  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const lines = [
-    `[${ts}]`,
-    `RUN_ID    : ${RUN_ID}`,
-    `STEP      : ${step}`,
-    `STATUS    : ${status}`,
-    `SEVERITY  : ${severity}`,
-  ];
-  if (type)       lines.push(`TYPE      : ${type}`);
-  if (message)    lines.push(`MESSAGE   : ${message}`);
-  if (confidence) lines.push(`CONFIDENCE: ${confidence}`);
-  if (checkpoint) lines.push(`CHECKPOINT: ${checkpoint.name} (steps ${checkpoint.steps}) — ${checkpoint.desc}`);
-  if (recovery)   lines.push(`RECOVERY  : ${recovery}`);
-  if (action)     lines.push(`ACTION    : ${action}`);
-  console.log('\n' + lines.join('\n') + '\n');
-}
-
-function diagnose(err) {
-  const msg = (err.message || String(err)).toLowerCase();
-  if (msg.includes('timeout'))                                         return { severity: 'ERROR', type: 'TimeoutError',    confidence: 'HIGH — element not rendered or page too slow' };
-  if (msg.includes('net::') || msg.includes('err_'))                  return { severity: 'ERROR', type: 'NetworkError',    confidence: 'HIGH — connectivity issue' };
-  if (msg.includes('not found') || msg.includes('cannot read'))       return { severity: 'ERROR', type: 'ElementNotFound', confidence: 'MEDIUM — selector may have changed' };
-  if (msg.includes('cannot connect') || msg.includes('econnrefused')) return { severity: 'FATAL', type: 'ConnectionError', confidence: 'HIGH — Chrome or Odoo unreachable' };
-  return { severity: 'ERROR', type: 'UnknownError', confidence: 'LOW — manual inspection required' };
-}
-
-async function runCheckpoint(name, fn, recovery) {
+// Retries fn up to MAX_RETRIES with linear backoff. fn receives the attempt
+// number (1-based) so it can recover state (e.g. re-navigate) on retries.
+async function withRetry(name, fn) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    let currentStep = '?';
     try {
-      return await fn(s => { currentStep = s; });
+      return await fn(attempt);
     } catch (err) {
       if (err.isEarlyExit) throw err;
-
-      const diagnosis     = diagnose(err);
-      const isLastAttempt = attempt === MAX_RETRIES;
-
-      structuredLog({
-        step: currentStep, status: 'FAILED', ...diagnosis,
-        message: err.message, checkpoint: CP[name],
-        recovery: isLastAttempt ? 'Max retries reached' : recovery,
-        action:   isLastAttempt ? 'ESCALATE' : `Retry ${attempt}/${MAX_RETRIES}`,
-      });
-
-      if (diagnosis.severity === 'FATAL' || isLastAttempt) {
-        err.failedStep  = currentStep;
-        err.isEscalated = true;
-        structuredLog({ step: currentStep, status: 'ESCALATED', ...diagnosis, message: err.message, action: `Failed ${attempt}/${MAX_RETRIES} — manual intervention required` });
+      const isLast = attempt === MAX_RETRIES;
+      log(`[${name}] FAILED at ${currentStep} (attempt ${attempt}/${MAX_RETRIES}): ${err.message}`);
+      if (isLast) {
+        err.failedStep = currentStep;
         throw err;
       }
-
       await new Promise(r => setTimeout(r, RETRY_BACKOFF * attempt));
     }
   }
 }
 
 async function checkpointA() {
-  return runCheckpoint('A', async (track) => {
-    track('1/13 launchChrome');       await launchChrome();
-    track('2/13 connectAndNavigate'); const conn = await connectAndNavigate();
-    track('3/13 selectDatabase');     await selectDatabase(conn.page);
+  return withRetry('A: browser + DB', async () => {
+    step('1/12 connectAndNavigate'); const conn = await connectAndNavigate();
+    step('2/12 selectDatabase');
+    try {
+      await selectDatabase(conn.page);
+    } catch (err) {
+      await conn.browser.close().catch(() => {}); // don't leak browsers across retries
+      throw err;
+    }
     return conn;
-  }, 'Restart Checkpoint A — re-launch Chrome and reconnect');
+  });
 }
 
 async function checkpointB(page) {
-  return runCheckpoint('B', async (track) => {
-    track('4/13 login');              await login(page);
-    track('5/13 switchBU');           await switchBU(page);
-    track('6/13 navigateToPRtoPO');   await navigateToPRtoPO(page);
-  }, 'Restart Checkpoint B — re-login and switch BU');
+  return withRetry('B: login + BU', async () => {
+    step('3/12 login');            await login(page);
+    step('4/12 switchBU');         await switchBU(page);
+    step('5/12 navigateToPRtoPO'); await navigateToPRtoPO(page);
+  });
 }
 
-async function checkpointC(page, attempt = 1) {
-  return runCheckpoint('C', async (track) => {
-    if (attempt > 1) { track('6↺ navigateToPRtoPO'); await navigateToPRtoPO(page); }
-    track('7/13 removeFilter');    await removeFilter(page);
-    track('8/13 groupByBuyer');    await groupByBuyer(page);
-    track('9/13 clickSupplyBuyer');
+async function checkpointC(page) {
+  return withRetry('C: filter + export', async (attempt) => {
+    if (attempt > 1) {
+      step('5↺ navigateToPRtoPO (recovery)');
+      await navigateToPRtoPO(page);
+    }
+    step('6/12 removeFilter');     await removeFilter(page);
+    step('7/12 groupByBuyer');     await groupByBuyer(page);
+    step('8/12 clickSupplyBuyer');
     const hasData = await clickSupplyBuyer(page);
     if (!hasData) {
-      structuredLog({
-        step: '9/13 clickSupplyBuyer', status: 'WARN', severity: 'WARN', type: 'NoData',
-        message: `No ${CONFIG.buyer} PRs found — list is empty or group missing`,
-        confidence: 'MEDIUM — verify Generate PR to PO has pending PRs today',
-        action: 'STOPPING — nothing to process',
-      });
-      throw new EarlyExit(`No ${CONFIG.buyer} PRs found — nothing to process`, '9/13 clickSupplyBuyer');
+      throw new EarlyExit(`No ${CONFIG.buyer} PRs found — nothing to process`, '8/12 clickSupplyBuyer');
     }
-    track('10/13 exportXLSX');
+    step('9/12 exportXLSX');
     const exportPaths = await exportXLSX(page);
     if (!exportPaths?.filePath || !existsSync(exportPaths.filePath)) throw new Error('Export file not created — zero rows or export failed');
     return exportPaths;
-  }, 'Navigate back to Generate PR to PO, re-run steps 7–10');
+  });
 }
 
-async function checkpointD(exportPaths, logPath, runStats) {
-  return runCheckpoint('D', async (track) => {
-    track('11/13 appendToLog');
-    const { newRows, headers, skipped, exported } = await appendToLog(exportPaths.filePath, logPath);
+async function checkpointD(exportPaths, runStats) {
+  return withRetry('D: process + append', async () => {
+    step('10/12 appendToLog');
+    const { newRows, headers, skipped, exported } = await appendToLog(exportPaths.filePath);
     runStats.exportedRows = exported;
     runStats.skippedRows  = skipped;
 
     if (newRows.length === 0) {
-      structuredLog({
-        step: '11/13 appendToLog', status: 'WARN', severity: 'WARN', type: 'ZeroRows',
-        message: 'No new rows after dedup — all may be duplicates or export was empty',
-        confidence: 'MEDIUM — verify SUPPLY_BUYER has pending PRs today',
-        action: 'STOPPING — manual check required',
-      });
       cleanup(exportPaths);
-      throw new EarlyExit('All rows were duplicates — nothing new to process', '11/13 appendToLog');
+      throw new EarlyExit('All rows were duplicates — nothing new to process', '10/12 appendToLog');
     }
 
-    track('12/13 validateAndAppend');
+    step('11/12 validateAndAppend');
     const rej = await validateAndAppend(newRows, headers);
-    runStats.appendedRows     = rej?.appended  ?? 0;
-    runStats.rejectedRows     = rej?.total     ?? 0;
-    runStats.rejectedVendor   = rej?.vendor    ?? 0;
-    runStats.rejectedMinOrder = rej?.minOrder  ?? 0;
-    runStats.rejectedItems    = rej?.items     ?? '';
-    runStats.rejectionReasons = rej?.reasons   ?? '';
+    runStats.appendedRows     = rej.appended;
+    runStats.rejectedRows     = rej.total;
+    runStats.rejectedVendor   = rej.vendor;
+    runStats.rejectedMinOrder = rej.minOrder;
+    runStats.rejectedItems    = rej.items;
+    runStats.rejectionReasons = rej.reasons;
+    if (rej.validationSkipped) {
+      runStats.status = 'WARN';
+      runStats.error  = 'Reference sheet unreachable — rows appended WITHOUT vendor/min-order validation';
+    }
 
-    track('13/13 cleanup');
+    step('12/12 cleanup');
     cleanup(exportPaths);
-  }, 'Restart Checkpoint D — re-run post-export processing');
+  });
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 (async () => {
-  const logPath = process.argv.find(a => a.endsWith('.xlsx')) || findLogFile();
   console.log(`[OPERATOR] PR2PO starting — RUN_ID: ${RUN_ID} | Profile: ${CONFIG.profileKey.toUpperCase()} | BU: ${CONFIG.bu}`);
   console.log(`[OPERATOR] Log tab: ${CONFIG.logTab}`);
 
@@ -838,25 +814,19 @@ async function checkpointD(exportPaths, logPath, runStats) {
     conn = await checkpointA();
     await checkpointB(conn.page);
     const exportPaths = await checkpointC(conn.page);
-    await checkpointD(exportPaths, logPath, runStats);
-    console.log(`\n[OPERATOR] RUN_ID: ${RUN_ID} — COMPLETED SUCCESSFULLY`);
+    await checkpointD(exportPaths, runStats);
+    console.log(`\n[OPERATOR] RUN_ID: ${RUN_ID} — COMPLETED ${runStats.status === 'WARN' ? 'WITH WARNINGS' : 'SUCCESSFULLY'}`);
   } catch (err) {
-    if (err.isEarlyExit) {
-      runStats.status    = 'WARN';
-      runStats.stoppedAt = err.failedStep || '';
-      runStats.error     = err.message;
-      console.log(`\n[OPERATOR] RUN_ID: ${RUN_ID} — WARN: ${err.message}`);
-    } else {
-      runStats.status    = err.isEscalated ? 'ESCALATED' : 'FAILED';
-      runStats.stoppedAt = err.failedStep || '';
-      runStats.error     = err.message;
-      console.error(`\n[OPERATOR] RUN_ID: ${RUN_ID} — ${runStats.status}: ${err.message}`);
-    }
+    runStats.status    = err.isEarlyExit ? 'WARN' : 'FAILED';
+    runStats.stoppedAt = err.failedStep || '';
+    runStats.error     = err.message;
+    const print = err.isEarlyExit ? console.log : console.error;
+    print(`\n[OPERATOR] RUN_ID: ${RUN_ID} — ${runStats.status}: ${err.message}`);
   } finally {
     await Promise.all([
       conn?.browser ? conn.browser.close().catch(() => {}) : Promise.resolve(),
       writeExecuteLog(runStats),
     ]);
-    if (runStats.status === 'FAILED' || runStats.status === 'ESCALATED') process.exit(1);
+    if (runStats.status === 'FAILED') process.exit(1);
   }
 })();
