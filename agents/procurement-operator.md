@@ -37,7 +37,10 @@ C:\Users\uSeR\Desktop\Claude Code\      ← toolbox & arsenal (in repo)
 │       └─ memory\                      ← episodic memory
 ├─ odoo_pr_to_po.mjs                    ← PR→PO automation
 ├─ po-daily-pipeline.mjs                ← PO daily pipeline
-└─ .env                                 ← credentials (never commit)
+├─ .env                                 ← credentials (never commit)
+├─ .gsheets-token.json                  ← Google Sheets OAuth token (never commit)
+├─ .gdrive-token.json                   ← Google Drive OAuth token (never commit)
+└─ .gdrive-po-token.json                ← Google Drive PO OAuth token (never commit)
 ```
 
 Read `SKILL.md` for full behavior instructions — it is the single source of truth for how to act.
