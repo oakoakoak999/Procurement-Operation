@@ -37,9 +37,6 @@ C:\Users\uSeR\Desktop\Claude Code\      ← toolbox & arsenal (in repo)
 │       └─ memory\                      ← episodic memory
 ├─ odoo_pr_to_po.mjs                    ← PR→PO automation
 ├─ po-daily-pipeline.mjs                ← PO daily pipeline
-├─ upload-logs.mjs                      ← sync logs + CLAUDE.md to Drive
-├─ upload-vault-full.mjs                ← full vault sync to Drive
-├─ download-from-drive.mjs              ← download from Drive
 └─ .env                                 ← credentials (never commit)
 ```
 
