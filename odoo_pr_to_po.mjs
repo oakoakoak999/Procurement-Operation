@@ -73,7 +73,14 @@ const PREFIX_TO_BU = Object.fromEntries(
   Object.entries(BU_ODOO_PREFIX).map(([code, prefix]) => [prefix, code])
 );
 const _prof = PROFILES[PROFILE_KEY];
-if (!_prof) throw new Error(`Unknown profile "${PROFILE_KEY}". Valid: ${Object.keys(PROFILES).join(', ')}`);
+if (!_prof) {
+  const swapped = BU_ODOO_PREFIX[PROFILE_KEY] && PROFILES[TARGET_BU_CODE];
+  throw new Error(
+    `Unknown profile "${PROFILE_KEY}". Valid: ${Object.keys(PROFILES).join(', ')}` +
+    (swapped ? `\n(profile and BU_CODE may be swapped — usage is <profile> <BU_CODE>)` : '')
+  );
+}
+if (!BU_ODOO_PREFIX[TARGET_BU_CODE]) throw new Error(`Unknown BU "${TARGET_BU_CODE}". Valid: ${Object.keys(BU_ODOO_PREFIX).join(', ')}`);
 const TARGET_BUYER   = _prof.buyer;
 const HEADLESS       = process.argv.includes('--headless');
 const DOWNLOAD_PATH   = `${process.env.USERPROFILE}\\Downloads`;
@@ -118,7 +125,7 @@ async function fetchGSheetCSV() {
   function fetchUrl(u, hops = 0) {
     return new Promise((resolve, reject) => {
       if (hops > 5) return reject(new Error('Too many redirects fetching GSheet'));
-      httpsGet(u, res => {
+      const req = httpsGet(u, { timeout: 30000 }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           resolve(fetchUrl(res.headers.location, hops + 1));
           return;
@@ -128,7 +135,9 @@ async function fetchGSheetCSV() {
         res.on('data', chunk => data += chunk);
         res.on('end', () => resolve(data));
         res.on('error', reject);
-      }).on('error', reject);
+      });
+      req.on('timeout', () => req.destroy(new Error('GSheet fetch timed out after 30s')));
+      req.on('error', reject);
     });
   }
 

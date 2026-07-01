@@ -126,6 +126,24 @@ function log(stage, msg) {
   console.log(`[${new Date().toLocaleTimeString()}] [${stage}] ${msg}`);
 }
 
+const PRINT_MAX_RETRIES   = 3;
+const PRINT_RETRY_BACKOFF = 3000;
+
+// stagePrint opens/closes its own browser per call, so retrying the whole
+// function is safe — each attempt starts from a clean session.
+async function withRetry(name, fn) {
+  for (let attempt = 1; attempt <= PRINT_MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isLast = attempt === PRINT_MAX_RETRIES;
+      log(name, `FAILED (attempt ${attempt}/${PRINT_MAX_RETRIES}): ${err.message}`);
+      if (isLast) throw err;
+      await new Promise(r => setTimeout(r, PRINT_RETRY_BACKOFF * attempt));
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // STAGE 1 — PRINT
 // ══════════════════════════════════════════════════════════════════════════════
@@ -574,7 +592,7 @@ async function stageUpload() {
       throw new Error(`No PDFs found in ${DOWNLOADS_DIR} matching PO-${TARGET_BU_CODE}-${DATE_SLUG}-*.pdf`);
     log('PRINT', `Skipped — using ${pdfFiles.length} existing file(s)`);
   } else {
-    pdfFiles = await stagePrint();
+    pdfFiles = await withRetry('PRINT', stagePrint);
     if (pdfFiles.length === 0) {
       console.log('\n✅ Pipeline complete — no POs for today\n');
       return;
