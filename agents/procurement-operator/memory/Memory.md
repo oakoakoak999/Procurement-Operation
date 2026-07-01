@@ -9,4 +9,5 @@
 | 2026-06-11 | PO-Daily PSSK | — |
 | 2026-06-14 | PO-Daily PSNK | — |
 | 2026-06-18 | PO-Daily PSV 2026-05-05 | — |
+| 2026-07-01 | supply PSUV | vendor rejection: PR 57PR26060835 |
 
