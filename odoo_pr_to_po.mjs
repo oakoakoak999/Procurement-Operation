@@ -596,28 +596,35 @@ async function validateAndAppend(newRows, headers) {
       const logVendorCode = vendorRaw.match(/^\(([^)]+)\)/)?.[1]?.trim() || '';
       const logVendorName = vendorRaw.replace(/^\([^)]+\)\s*/, '').trim().toLowerCase();
 
+      // Multiple ref rows = alternative approved vendors — pass if ANY matches.
+      // A ref with blank code and name means any vendor is OK.
+      let vendorOk = false;
       for (const ref of refs) {
         const refVendorCode = ref['Vendor Code'].trim();
         const refVendorName = ref['Vendor Name'].trim();
-        if (!refVendorCode && !refVendorName) continue; // blank = any vendor OK
-
-        const vendorOk =
+        if (
+          (!refVendorCode && !refVendorName) ||
           (refVendorCode && logVendorCode === refVendorCode) ||
-          (refVendorName && logVendorName === refVendorName.toLowerCase());
+          (refVendorName && logVendorName === refVendorName.toLowerCase())
+        ) { vendorOk = true; break; }
+      }
 
-        if (!vendorOk) {
-          prRejected = true;
-          rejTag     = 'vendor';
-          rejReason  = `wrong vendor on [${itemCode}]: got "${vendorRaw}", expected "(${refVendorCode}) ${refVendorName}"`;
-          log(`REJECTED PR ${prNum}: ${rejReason}`);
-          break outer;
-        }
+      if (!vendorOk) {
+        const expected = refs
+          .map(r => `"(${r['Vendor Code'].trim()}) ${r['Vendor Name'].trim()}"`)
+          .join(' or ');
+        prRejected = true;
+        rejTag     = 'vendor';
+        rejReason  = `wrong vendor on [${itemCode}]: got "${vendorRaw}", expected ${expected}`;
+        log(`REJECTED PR ${prNum}: ${rejReason}`);
+        break outer;
       }
     }
 
     // ── 2. Minimum order check (sum Tax incl. per vendor within this PR) ──────
     if (!prRejected) {
-      // vendorKey → { total, minRequired }
+      // vendorKey → { total, minRequired } — every line counts toward the vendor's
+      // order total; only items with a ref entry contribute a minimum requirement
       const vendorTotals = new Map();
       for (const row of rows) {
         const productRaw = (row[productIdx] || '').toString();
@@ -626,21 +633,18 @@ async function validateAndAppend(newRows, headers) {
         const taxIncl    = parseFloat(String(row[taxIdx] ?? '').replace(/,/g, '')) || 0;
         const buCode     = buFromCompany(company);
         const itemCode   = productRaw.match(/^\[(\d+)\]/)?.[1];
-        if (!itemCode) continue;
 
-        const refs = refMap.get(`${buCode}|${itemCode}`);
+        if (!vendorTotals.has(vendorRaw)) vendorTotals.set(vendorRaw, { total: 0, minRequired: 0 });
+        const vt = vendorTotals.get(vendorRaw);
+        vt.total += taxIncl;
+
+        const refs = itemCode ? refMap.get(`${buCode}|${itemCode}`) : null;
         if (!refs) continue;
-
-        const minRequired = Math.max(...refs.map(r => parseFloat(r['Minimum Order']) || 0));
-        if (!minRequired) continue;
-
-        if (!vendorTotals.has(vendorRaw)) vendorTotals.set(vendorRaw, { total: 0, minRequired });
-        else vendorTotals.get(vendorRaw).minRequired = Math.max(vendorTotals.get(vendorRaw).minRequired, minRequired);
-        vendorTotals.get(vendorRaw).total += taxIncl;
+        vt.minRequired = Math.max(vt.minRequired, ...refs.map(r => parseFloat(r['Minimum Order']) || 0));
       }
 
       for (const [vendor, { total, minRequired }] of vendorTotals) {
-        if (total < minRequired) {
+        if (minRequired > 0 && total < minRequired) {
           prRejected = true;
           rejTag     = 'min order';
           rejReason  = `${vendor} total ${total.toLocaleString()} < ${minRequired.toLocaleString()} minimum order`;
