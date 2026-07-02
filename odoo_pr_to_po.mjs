@@ -86,7 +86,8 @@ const HEADLESS       = process.argv.includes('--headless');
 const DOWNLOAD_PATH   = `${process.env.USERPROFILE}\\Downloads`;
 const GSHEET_REF_ID  = '1HaJt0f0qVnY2vFs193ZVXdI5xhenKMTYkr-TZcj3Rzo'; // vendor + min order reference
 const GSHEET_REF_GID = '139595673'; // tab: data_view
-const GSHEET_LOG_ID  = '13-aAvDWJ4DxOGyZLgCOoPrwhy6xSVGiEER_v63a7jrc'; // log sheet (owned by thanapol.ph@princgroup.com)
+const GSHEET_LOG_ID  = process.env.GSHEET_LOG_ID; // each deployment's own log sheet — set in .env
+if (!GSHEET_LOG_ID) throw new Error('GSHEET_LOG_ID not set in .env');
 const GSHEET_LOG_TAB      = _prof.logTab;
 const CONFIG              = { profileKey: PROFILE_KEY, bu: TARGET_BU_CODE, buyer: TARGET_BUYER, logTab: GSHEET_LOG_TAB };
 const GSHEET_EXEC_TAB     = 'Execute Log';
