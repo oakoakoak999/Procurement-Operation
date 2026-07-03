@@ -8,6 +8,11 @@
  * Usage:
  *   node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> approve [--test] [--headless]
  *   node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> reject  [--test] [--headless]
+ *   node odoo_pr_action.mjs <profile> <BU_CODE> <approve|reject> --file=<path> [--test] [--headless]
+ *
+ * --file: read PR numbers from a text file instead of the CLI arg — one PR
+ * number per line, blank lines and lines starting with # are ignored. Use
+ * this for large batches instead of hand-typing a comma list.
  *
  * --test: runs the full flow (login, navigate, find each PR, check its row,
  * open Actions menu) but skips the final click. No real Odoo state change.
@@ -68,12 +73,31 @@ const BU_ODOO_PREFIX = {
   PPAT:  '[PPAT:00075]',
 };
 
-const USAGE = 'Usage: node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> <approve|reject> [--test] [--headless]';
+const USAGE = 'Usage: node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> <approve|reject> [--test] [--headless]\n' +
+              '   or: node odoo_pr_action.mjs <profile> <BU_CODE> <approve|reject> --file=<path> [--test] [--headless]';
+const FILE_FLAG = process.argv.find(a => a.startsWith('--file='));
 const _pos = process.argv.slice(2).filter(a => !a.startsWith('--'));
-const [PROFILE_KEY, TARGET_BU_CODE, PR_NUMBERS_ARG, ACTION] = _pos;
-if (!PROFILE_KEY || !TARGET_BU_CODE || !PR_NUMBERS_ARG || !ACTION) throw new Error(USAGE);
 
-const PR_NUMBERS = [...new Set(PR_NUMBERS_ARG.split(',').map(s => s.trim()).filter(Boolean))];
+let PROFILE_KEY, TARGET_BU_CODE, PR_NUMBERS_ARG, ACTION;
+if (FILE_FLAG) {
+  [PROFILE_KEY, TARGET_BU_CODE, ACTION] = _pos;
+} else {
+  [PROFILE_KEY, TARGET_BU_CODE, PR_NUMBERS_ARG, ACTION] = _pos;
+}
+if (!PROFILE_KEY || !TARGET_BU_CODE || !ACTION || (!FILE_FLAG && !PR_NUMBERS_ARG)) throw new Error(USAGE);
+
+let PR_NUMBERS;
+if (FILE_FLAG) {
+  const listPath = FILE_FLAG.slice('--file='.length);
+  if (!existsSync(listPath)) throw new Error(`--file path not found: ${listPath}`);
+  PR_NUMBERS = [...new Set(
+    readFileSync(listPath, 'utf8').split(/\r?\n/)
+      .map(s => s.trim())
+      .filter(s => s && !s.startsWith('#'))
+  )];
+} else {
+  PR_NUMBERS = [...new Set(PR_NUMBERS_ARG.split(',').map(s => s.trim()).filter(Boolean))];
+}
 if (PR_NUMBERS.length === 0) throw new Error(USAGE);
 
 const _prof = PROFILES[PROFILE_KEY];
