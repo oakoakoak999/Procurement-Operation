@@ -17,6 +17,9 @@ node_modules/
 # Claude Code internals
 .claude/
 
+# Obsidian workspace state (local, opened memory\ as a vault)
+.obsidian/
+
 # Runtime data — not important to track
 knowledge.json
 

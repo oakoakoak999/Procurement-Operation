@@ -126,6 +126,17 @@ function log(stage, msg) {
   console.log(`[${new Date().toLocaleTimeString()}] [${stage}] ${msg}`);
 }
 
+const WARNINGS = [];
+function logWarning(stage, msg) {
+  WARNINGS.push(`[${stage}] ${msg}`);
+  log(stage, `WARNING: ${msg}`);
+}
+
+const RUN_ID = (() => {
+  const n = new Date(), p = v => String(v).padStart(2, '0');
+  return `${n.getFullYear()}${p(n.getMonth()+1)}${p(n.getDate())}-${p(n.getHours())}${p(n.getMinutes())}`;
+})();
+
 const PRINT_MAX_RETRIES   = 3;
 const PRINT_RETRY_BACKOFF = 3000;
 
@@ -397,7 +408,7 @@ async function splitOnePdf(inputPath) {
   }
 
   const orphanPages = pages.filter(p => !p.po).length;
-  if (orphanPages > 0) log('SPLIT', `  WARNING: ${orphanPages} page(s) before first PO number — dropped`);
+  if (orphanPages > 0) logWarning('SPLIT', `${orphanPages} page(s) before first PO number — dropped`);
 
   const groups = new Map();
   for (const p of pages) {
@@ -425,7 +436,7 @@ async function splitOnePdf(inputPath) {
 
     let folder = SPLIT_DIR;
     if (vendorCode && vendorName) folder = resolveVendorFolder(SPLIT_DIR, vendorCode, vendorName);
-    else log('SPLIT', `  WARNING: ${poNum} has no vendor info — saved to split root`);
+    else logWarning('SPLIT', `${poNum} has no vendor info — saved to split root`);
 
     writeFileSync(join(folder, filename), pdfBytes);
     log('SPLIT', `  ${filename}${clearing ? ' [Clearing]' : ''}`);
@@ -440,6 +451,7 @@ async function stageSplit(pdfFiles) {
   let total = 0;
   for (const f of pdfFiles) total += await splitOnePdf(f);
   log('SPLIT', `Done — ${total} PO file(s) → ${SPLIT_DIR}`);
+  return total;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -565,11 +577,12 @@ async function stageUpload() {
 
   // Vendor-less PDFs in the split root: upload to the year folder so nothing is lost
   if (rootPdfs.length > 0) {
-    log('UPLOAD', `WARNING: ${rootPdfs.length} PDF(s) without vendor folder — uploading to year folder root`);
+    logWarning('UPLOAD', `${rootPdfs.length} PDF(s) without vendor folder — uploading to year folder root`);
     await uploadDirToDrive(drive, SPLIT_DIR, yearFolder, counters);
   }
 
   console.log(`\n[UPLOAD] Done — ${counters.uploaded} uploaded, ${counters.skipped} already existed (skipped)`);
+  return counters;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -577,39 +590,67 @@ async function stageUpload() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 (async () => {
-  console.log(`\n── PO Daily Pipeline ── ${TARGET_DATE} ${'─'.repeat(Math.max(0, 40 - TARGET_DATE.length))}`);
+  console.log(`\n── PO Daily Pipeline ── RUN_ID: ${RUN_ID} — ${TARGET_DATE} ${'─'.repeat(Math.max(0, 40 - TARGET_DATE.length))}`);
   console.log(`   Print: ${SKIP_PRINT ? 'SKIP' : 'ON'} | Split: ${SKIP_SPLIT ? 'SKIP' : 'ON'} | Drive: ${ORDER_FOLDER}`);
   console.log(`${'─'.repeat(56)}\n`);
 
-  let pdfFiles;
+  const runStats = {
+    runId: RUN_ID, bu: TARGET_BU_CODE, date: TARGET_DATE, status: 'SUCCESS',
+    printed: null, split: null, uploaded: null, skipped: null,
+    warnings: null, stoppedAt: null, error: null,
+  };
+  let stage = 'PRINT';
 
-  if (SKIP_PRINT) {
-    pdfFiles = readdirSync(DOWNLOADS_DIR)
-      .filter(f => f.startsWith(`PO-${TARGET_BU_CODE}-${DATE_SLUG}`) && f.endsWith('.pdf'))
-      .map(f => join(DOWNLOADS_DIR, f))
-      .sort();
-    if (!pdfFiles.length)
-      throw new Error(`No PDFs found in ${DOWNLOADS_DIR} matching PO-${TARGET_BU_CODE}-${DATE_SLUG}-*.pdf`);
-    log('PRINT', `Skipped — using ${pdfFiles.length} existing file(s)`);
-  } else {
-    pdfFiles = await withRetry('PRINT', stagePrint);
-    if (pdfFiles.length === 0) {
-      console.log('\n✅ Pipeline complete — no POs for today\n');
-      return;
+  try {
+    let pdfFiles;
+
+    if (SKIP_PRINT) {
+      pdfFiles = readdirSync(DOWNLOADS_DIR)
+        .filter(f => f.startsWith(`PO-${TARGET_BU_CODE}-${DATE_SLUG}`) && f.endsWith('.pdf'))
+        .map(f => join(DOWNLOADS_DIR, f))
+        .sort();
+      if (!pdfFiles.length)
+        throw new Error(`No PDFs found in ${DOWNLOADS_DIR} matching PO-${TARGET_BU_CODE}-${DATE_SLUG}-*.pdf`);
+      log('PRINT', `Skipped — using ${pdfFiles.length} existing file(s)`);
+      runStats.printed = pdfFiles.length;
+    } else {
+      pdfFiles = await withRetry('PRINT', stagePrint);
+      runStats.printed = pdfFiles.length;
+      if (pdfFiles.length === 0) {
+        runStats.status    = 'WARN';
+        runStats.stoppedAt = 'PRINT';
+        runStats.error     = 'No POs found for target date';
+        console.log('\n✅ Pipeline complete — no POs for today\n');
+        return;
+      }
     }
+
+    stage = 'SPLIT';
+    if (SKIP_SPLIT) {
+      if (!existsSync(SPLIT_DIR)) throw new Error(`Split dir not found: ${SPLIT_DIR}`);
+      log('SPLIT', `Skipped — using existing ${SPLIT_DIR}`);
+    } else {
+      runStats.split = await stageSplit(pdfFiles);
+    }
+
+    stage = 'UPLOAD';
+    const uploadCounters = await stageUpload();
+    runStats.uploaded = uploadCounters.uploaded;
+    runStats.skipped  = uploadCounters.skipped;
+
+    console.log('\n✅ Pipeline complete\n');
+  } catch (err) {
+    runStats.status    = 'FAILED';
+    runStats.stoppedAt = stage;
+    runStats.error     = err.message;
+    console.error('\n❌', err.message);
+  } finally {
+    runStats.warnings = WARNINGS.length ? WARNINGS.join('; ') : null;
+    console.log(`\n[SUMMARY] RUN_ID: ${RUN_ID} — ${runStats.status} | BU: ${runStats.bu} | Date: ${runStats.date}`);
+    console.log(`  Printed: ${runStats.printed ?? '-'} | Split: ${runStats.split ?? '-'} | Uploaded: ${runStats.uploaded ?? '-'} | Skipped: ${runStats.skipped ?? '-'}`);
+    if (runStats.warnings)  console.log(`  Warnings: ${runStats.warnings}`);
+    if (runStats.stoppedAt) console.log(`  Stopped At: ${runStats.stoppedAt}`);
+    if (runStats.error)     console.log(`  Error: ${runStats.error}`);
+    if (runStats.status === 'FAILED') process.exit(1);
   }
-
-  if (SKIP_SPLIT) {
-    if (!existsSync(SPLIT_DIR)) throw new Error(`Split dir not found: ${SPLIT_DIR}`);
-    log('SPLIT', `Skipped — using existing ${SPLIT_DIR}`);
-  } else {
-    await stageSplit(pdfFiles);
-  }
-
-  await stageUpload();
-
-  console.log('\n✅ Pipeline complete\n');
-})().catch(err => {
-  console.error('\n❌', err.message);
-  process.exit(1);
-});
+})();
