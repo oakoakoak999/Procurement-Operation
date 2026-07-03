@@ -127,6 +127,20 @@ const COL_NAME_OVERRIDES = {
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
+// "2nd tier Vendor" cell can hold multiple vendors, "|"-separated, each as
+// "<code> <name>" (e.g. "0000000308 บริษัท... - BDF | 0000000918 บริษัท... - 3M").
+// Entries without a leading numeric code are matched as name-only.
+function parseTier2Vendors(raw) {
+  return (raw || '')
+    .split('|')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(entry => {
+      const m = entry.match(/^(\d+)\s+(.*)$/);
+      return m ? { code: m[1], name: m[2].trim() } : { code: '', name: entry };
+    });
+}
+
 function parseCSVLine(line) {
   const cells = [];
   let cur = '', inQ = false;
@@ -686,24 +700,28 @@ async function validateAndAppend(newRows, headers) {
 
       // Multiple ref rows = alternative approved vendors — pass if ANY matches.
       // A ref with blank code and name means any vendor is OK.
-      // 2nd tier Vendor is a free-text fallback: pass if it matches the log
-      // vendor's code or name, same as the 1st tier check.
+      // 2nd tier Vendor is a "|"-separated fallback list: pass if the log
+      // vendor's code or name matches ANY entry in it.
       let vendorOk = false;
       for (const ref of refs) {
         const refVendorCode = ref['Vendor Code'].trim();
         const refVendorName = ref['Vendor Name'].trim();
-        const refVendorTier2 = (ref['2nd tier Vendor'] || '').trim();
+        const tier2Vendors   = parseTier2Vendors(ref['2nd tier Vendor']);
         if (
           (!refVendorCode && !refVendorName) ||
           (refVendorCode && logVendorCode === refVendorCode) ||
           (refVendorName && logVendorName === refVendorName.toLowerCase()) ||
-          (refVendorTier2 && (logVendorCode === refVendorTier2 || logVendorName === refVendorTier2.toLowerCase()))
+          tier2Vendors.some(v => (v.code && logVendorCode === v.code) || (v.name && logVendorName === v.name.toLowerCase()))
         ) { vendorOk = true; break; }
       }
 
       if (!vendorOk) {
         const expected = refs
-          .map(r => `"(${r['Vendor Code'].trim()}) ${r['Vendor Name'].trim()}"${r['2nd tier Vendor']?.trim() ? ` or 2nd tier "${r['2nd tier Vendor'].trim()}"` : ''}`)
+          .map(r => {
+            const tier2 = parseTier2Vendors(r['2nd tier Vendor']);
+            const tier2Str = tier2.length ? ` or 2nd tier ${tier2.map(v => `"(${v.code}) ${v.name}"`).join(' or ')}` : '';
+            return `"(${r['Vendor Code'].trim()}) ${r['Vendor Name'].trim()}"${tier2Str}`;
+          })
           .join(' or ');
         prRejected = true;
         rejTag     = 'vendor';
