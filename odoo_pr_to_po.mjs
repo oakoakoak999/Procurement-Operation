@@ -30,6 +30,11 @@
  * NOT wrapped in withRetry. "Generate to PO" has no confirm dialog, so a
  * retry-driven re-click on the same batch would create duplicate real POs.
  * If it fails, the run reports FAILED and stops; nothing auto-retries it.
+ *
+ * 2nd tier vendor (2026-07-03): reference sheet gained a "2nd tier Vendor"
+ * column (free text). Vendor check now passes if the log vendor matches
+ * EITHER the 1st tier Vendor Name/Code OR the 2nd tier Vendor cell (matched
+ * against the log vendor's code or name, same rule as 1st tier).
  */
 
 import { chromium } from 'playwright';
@@ -681,20 +686,24 @@ async function validateAndAppend(newRows, headers) {
 
       // Multiple ref rows = alternative approved vendors — pass if ANY matches.
       // A ref with blank code and name means any vendor is OK.
+      // 2nd tier Vendor is a free-text fallback: pass if it matches the log
+      // vendor's code or name, same as the 1st tier check.
       let vendorOk = false;
       for (const ref of refs) {
         const refVendorCode = ref['Vendor Code'].trim();
         const refVendorName = ref['Vendor Name'].trim();
+        const refVendorTier2 = (ref['2nd tier Vendor'] || '').trim();
         if (
           (!refVendorCode && !refVendorName) ||
           (refVendorCode && logVendorCode === refVendorCode) ||
-          (refVendorName && logVendorName === refVendorName.toLowerCase())
+          (refVendorName && logVendorName === refVendorName.toLowerCase()) ||
+          (refVendorTier2 && (logVendorCode === refVendorTier2 || logVendorName === refVendorTier2.toLowerCase()))
         ) { vendorOk = true; break; }
       }
 
       if (!vendorOk) {
         const expected = refs
-          .map(r => `"(${r['Vendor Code'].trim()}) ${r['Vendor Name'].trim()}"`)
+          .map(r => `"(${r['Vendor Code'].trim()}) ${r['Vendor Name'].trim()}"${r['2nd tier Vendor']?.trim() ? ` or 2nd tier "${r['2nd tier Vendor'].trim()}"` : ''}`)
           .join(' or ');
         prRejected = true;
         rejTag     = 'vendor';
