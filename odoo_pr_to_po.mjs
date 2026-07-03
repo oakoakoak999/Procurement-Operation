@@ -32,9 +32,15 @@
  * If it fails, the run reports FAILED and stops; nothing auto-retries it.
  *
  * 2nd tier vendor (2026-07-03): reference sheet gained a "2nd tier Vendor"
- * column (free text). Vendor check now passes if the log vendor matches
- * EITHER the 1st tier Vendor Name/Code OR the 2nd tier Vendor cell (matched
- * against the log vendor's code or name, same rule as 1st tier).
+ * column — "|"-separated list of "<code> <name>" entries, meant to hold
+ * vendors a human has previously approved as a one-off (see
+ * odoo_pr_action.mjs's promote-to-tier2 step). Vendor check now passes if
+ * the log vendor matches EITHER the 1st tier Vendor Name/Code OR any entry
+ * in the 2nd tier Vendor list. Runs track which PRs passed only via 2nd
+ * tier (runStats.appendedTier2Vendor / tier2PassPRNumbers, Execute Log
+ * column O) so an unattended --generate run stays distinguishable from a
+ * primary-criteria pass — 2nd tier means "trusted because a human already
+ * approved it once," not "matches the stated procurement policy."
  */
 
 import { chromium } from 'playwright';
@@ -118,7 +124,9 @@ const GSHEET_LOG_TAB      = _prof.logTab;
 const CONFIG              = { profileKey: PROFILE_KEY, bu: TARGET_BU_CODE, buyer: TARGET_BUYER, logTab: GSHEET_LOG_TAB };
 const GSHEET_EXEC_TAB     = 'Execute Log';
 const GSHEETS_TOKEN_FILE  = join(__dir, '.gsheets-token.json');
-const EXEC_LOG_HEADERS    = ['Run ID','Date','Time','Status','Exported Rows','Appended Rows','Skipped (Duplicates)','Rejected (Total)','Rejected (Vendor)','Rejected (Min Order)','Rejected Items','Rejection Reasons','Stopped At','Error'];
+// Appended (2nd Tier Vendor) added as column O (2026-07-03) — appended at the
+// end, not inserted mid-row, so historical rows' existing columns don't shift.
+const EXEC_LOG_HEADERS    = ['Run ID','Date','Time','Status','Exported Rows','Appended Rows','Skipped (Duplicates)','Rejected (Total)','Rejected (Vendor)','Rejected (Min Order)','Rejected Items','Rejection Reasons','Stopped At','Error','Appended (2nd Tier Vendor)'];
 
 // Column name overrides: source header → dest header (when names differ)
 const COL_NAME_OVERRIDES = {
@@ -193,14 +201,14 @@ async function fetchGSheetCSV() {
   });
 }
 
-async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skippedRows, rejectedRows, rejectedVendor, rejectedMinOrder, rejectedItems, rejectionReasons, stoppedAt, error }) {
+async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skippedRows, rejectedRows, rejectedVendor, rejectedMinOrder, rejectedItems, rejectionReasons, stoppedAt, error, appendedTier2Vendor }) {
   try {
     const sheets = await getSheetClient();
 
     const d = new Date(), p = v => String(v).padStart(2, '0');
     await sheets.spreadsheets.values.append({
       spreadsheetId: GSHEET_LOG_ID,
-      range: `'${GSHEET_EXEC_TAB}'!A:N`,
+      range: `'${GSHEET_EXEC_TAB}'!A:O`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [[
         runId,
@@ -217,6 +225,7 @@ async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skip
         rejectionReasons ?? '',
         stoppedAt        ?? '',
         error            ?? '',
+        appendedTier2Vendor ?? '',
       ]]},
     });
     log(`Execute log → "${status}" written to "${GSHEET_EXEC_TAB}" tab`);
@@ -626,7 +635,7 @@ async function appendToLog(exportPath) {
 // ─── STEP 11: VALIDATE (VENDOR + MIN ORDER) THEN APPEND ─────────────────────
 async function validateAndAppend(newRows, headers) {
   if (newRows.length === 0) {
-    return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: false, passingPRNumbers: [] };
+    return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: false, passingPRNumbers: [], tier2Count: 0 };
   }
 
   log('Fetching vendor & minimum order reference from Google Sheet...');
@@ -643,7 +652,7 @@ async function validateAndAppend(newRows, headers) {
     });
     await clearAppendedFormatting(sheets, GSHEET_LOG_TAB, appendRes.data.updates?.updatedRange, headers);
     // passingPRNumbers stays empty — unvalidated rows must never be auto-generated
-    return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true, passingPRNumbers: [] };
+    return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true, passingPRNumbers: [], tier2Count: 0 };
   }
   log(`Reference sheet loaded: ${refRows.length} rows`);
 
@@ -677,10 +686,13 @@ async function validateAndAppend(newRows, headers) {
   const rejectedItems    = [];
   const rejectedReasons  = [];
 
+  const tier2PassPRNumbers = [];
+
   for (const [prNum, rows] of prGroups) {
-    let prRejected = false;
-    let rejReason  = '';
-    let rejTag     = '';
+    let prRejected     = false;
+    let rejReason      = '';
+    let rejTag         = '';
+    let prMatchedTier2 = false;
 
     // ── 1. Vendor check (per row — wrong vendor rejects whole PR) ─────────────
     outer:
@@ -701,18 +713,22 @@ async function validateAndAppend(newRows, headers) {
       // Multiple ref rows = alternative approved vendors — pass if ANY matches.
       // A ref with blank code and name means any vendor is OK.
       // 2nd tier Vendor is a "|"-separated fallback list: pass if the log
-      // vendor's code or name matches ANY entry in it.
+      // vendor's code or name matches ANY entry in it. Track whether a pass
+      // only happened via 2nd tier so the run can report it separately —
+      // 2nd tier vendors are prior manual approvals, not the primary criteria.
       let vendorOk = false;
       for (const ref of refs) {
         const refVendorCode = ref['Vendor Code'].trim();
         const refVendorName = ref['Vendor Name'].trim();
-        const tier2Vendors   = parseTier2Vendors(ref['2nd tier Vendor']);
-        if (
-          (!refVendorCode && !refVendorName) ||
-          (refVendorCode && logVendorCode === refVendorCode) ||
-          (refVendorName && logVendorName === refVendorName.toLowerCase()) ||
-          tier2Vendors.some(v => (v.code && logVendorCode === v.code) || (v.name && logVendorName === v.name.toLowerCase()))
-        ) { vendorOk = true; break; }
+        const tier2Vendors  = parseTier2Vendors(ref['2nd tier Vendor']);
+        const anyVendorOk   = !refVendorCode && !refVendorName;
+        const tier1Ok        = (refVendorCode && logVendorCode === refVendorCode) || (refVendorName && logVendorName === refVendorName.toLowerCase());
+        const tier2Ok        = tier2Vendors.some(v => (v.code && logVendorCode === v.code) || (v.name && logVendorName === v.name.toLowerCase()));
+        if (anyVendorOk || tier1Ok || tier2Ok) {
+          vendorOk = true;
+          if (tier2Ok && !anyVendorOk && !tier1Ok) prMatchedTier2 = true;
+          break;
+        }
       }
 
       if (!vendorOk) {
@@ -772,6 +788,7 @@ async function validateAndAppend(newRows, headers) {
     } else {
       passingRows.push(...rows);
       passingPRNumbers.push(prNum);
+      if (prMatchedTier2) tier2PassPRNumbers.push(prNum);
     }
   }
 
@@ -790,6 +807,8 @@ async function validateAndAppend(newRows, headers) {
   log(`Appended ${passingRows.length} row(s). Rejected ${totalRejected} PR(s).`);
   if (totalRejected === 0) log('All PRs passed vendor and minimum order checks');
 
+  if (tier2PassPRNumbers.length > 0) log(`Passed via 2nd tier vendor: ${tier2PassPRNumbers.join(', ')}`);
+
   return {
     appended:  passingRows.length,
     total:     totalRejected,
@@ -799,6 +818,8 @@ async function validateAndAppend(newRows, headers) {
     reasons:   rejectedReasons.join('; '),
     validationSkipped: false,
     passingPRNumbers,
+    tier2Count: tier2PassPRNumbers.length,
+    tier2PassPRNumbers,
   };
 }
 
@@ -935,6 +956,8 @@ async function checkpointD(exportPaths, runStats) {
     runStats.rejectedItems    = rej.items;
     runStats.rejectionReasons = rej.reasons;
     runStats.passingPRNumbers = rej.passingPRNumbers;
+    runStats.appendedTier2Vendor = rej.tier2Count;
+    runStats.tier2PassPRNumbers  = rej.tier2PassPRNumbers || [];
     if (rej.validationSkipped) {
       runStats.status = 'WARN';
       runStats.error  = 'Reference sheet unreachable — rows appended WITHOUT vendor/min-order validation';
@@ -954,6 +977,7 @@ async function checkpointD(exportPaths, runStats) {
     runId: RUN_ID, status: 'SUCCESS',
     exportedRows: null, appendedRows: null, skippedRows: null,
     rejectedRows: null, rejectedVendor: null, rejectedMinOrder: null, rejectedItems: null, rejectionReasons: null,
+    appendedTier2Vendor: 0, tier2PassPRNumbers: [],
     passingPRNumbers: [], generateAttempted: false, generateExecuted: false, generateMatched: [], generateError: null,
     stoppedAt: null, error: null,
   };
@@ -984,6 +1008,9 @@ async function checkpointD(exportPaths, runStats) {
     }
 
     console.log(`\n[OPERATOR] RUN_ID: ${RUN_ID} — COMPLETED ${runStats.status === 'WARN' ? 'WITH WARNINGS' : runStats.status === 'FAILED' ? 'WITH GENERATE FAILURE' : 'SUCCESSFULLY'}`);
+    if (runStats.appendedTier2Vendor > 0) {
+      console.log(`[VENDOR TIER] Passed via 2nd tier (previously user-approved) vendor: ${runStats.tier2PassPRNumbers.join(', ')}`);
+    }
     if (GENERATE) {
       const genResult = runStats.generateError ? 'FAILED' : !runStats.generateAttempted ? 'SKIPPED (none passing)' : TEST_MODE ? 'DRY-RUN' : 'EXECUTED';
       console.log(`[GENERATE] Result: ${genResult}${runStats.generateError ? ` — ${runStats.generateError}` : ''}`);
