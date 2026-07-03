@@ -12,6 +12,24 @@
  * - Fixed: PLPN1/PLPN2 resolved from full company prefix, not just letters
  * - Changed: run is marked WARN (not SUCCESS) when reference sheet is unreachable
  *   and rows are appended without validation
+ *
+ * --generate (opt-in, 2026-07-03): after validation, also clicks "Generate to
+ * PO" in Odoo for every PR that passed vendor + minimum-order checks. Without
+ * this flag the script behaves exactly as before — export, validate, log —
+ * and never clicks anything in Odoo, which is what makes the default mode
+ * safe to run unattended (cron). PRs that fail validation are never touched
+ * by --generate; they still just get logged as leftovers for human review via
+ * odoo_pr_action.mjs.
+ *
+ * --test (only meaningful with --generate): runs the real generate flow up to
+ * opening the Actions menu, then stops before the click — same dry-run
+ * pattern as odoo_pr_action.mjs, so a batch can be replayed against the same
+ * sample PRs without consuming them into real POs.
+ *
+ * The generate step runs once, AFTER all retried checkpoints — deliberately
+ * NOT wrapped in withRetry. "Generate to PO" has no confirm dialog, so a
+ * retry-driven re-click on the same batch would create duplicate real POs.
+ * If it fails, the run reports FAILED and stops; nothing auto-retries it.
  */
 
 import { chromium } from 'playwright';
@@ -20,6 +38,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
+import { selectPRRows, executeOdooAction, resetSelection } from './pr-row-actions.mjs';
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -45,7 +64,7 @@ const _pos           = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const PROFILE_KEY    = _pos[0];
 const TARGET_BU_CODE = _pos[1];
 if (!PROFILE_KEY || !TARGET_BU_CODE)
-  throw new Error('Usage: node odoo_pr_to_po.mjs <profile> <BU_CODE> [--headless]\nProfiles: supply | medicine');
+  throw new Error('Usage: node odoo_pr_to_po.mjs <profile> <BU_CODE> [--headless] [--generate [--test]]\nProfiles: supply | medicine');
 
 const BU_ODOO_PREFIX = {
   PPNP:  '[PPNP:00051]',
@@ -83,6 +102,8 @@ if (!_prof) {
 if (!BU_ODOO_PREFIX[TARGET_BU_CODE]) throw new Error(`Unknown BU "${TARGET_BU_CODE}". Valid: ${Object.keys(BU_ODOO_PREFIX).join(', ')}`);
 const TARGET_BUYER   = _prof.buyer;
 const HEADLESS       = process.argv.includes('--headless');
+const GENERATE       = process.argv.includes('--generate');
+const TEST_MODE      = process.argv.includes('--test');
 const DOWNLOAD_PATH   = `${process.env.USERPROFILE}\\Downloads`;
 const GSHEET_REF_ID  = '1HaJt0f0qVnY2vFs193ZVXdI5xhenKMTYkr-TZcj3Rzo'; // vendor + min order reference
 const GSHEET_REF_GID = '139595673'; // tab: data_view
@@ -222,6 +243,64 @@ async function getSheetClient() {
   writeFileSync(GSHEETS_TOKEN_FILE, JSON.stringify(tokens, null, 2), 'utf8');
   log('Google Sheets token saved → ' + GSHEETS_TOKEN_FILE);
   return google.sheets({ version: 'v4', auth });
+}
+
+// Sheets API's values.append (insertDataOption: INSERT_ROWS) inherits cell
+// formatting from the row directly above the insertion point. On a fresh
+// per-BU log tab (headers only, no data rows yet), that row IS the header —
+// so the first append copies header formatting (bold, background, etc.) onto
+// real data rows. Resets appended rows to font "Prompt" (Thai-safe) and
+// re-applies explicit date formatting to Request Date / Required Date, since
+// the blanket format reset would otherwise also strip USER_ENTERED's
+// auto-detected date format. tabName must match a sheets.properties.title;
+// headers is the destination tab's header row (to locate the date columns).
+async function clearAppendedFormatting(sheets, tabName, updatedRange, headers = []) {
+  const m = /![A-Z]+(\d+):[A-Z]+(\d+)/.exec(updatedRange || '');
+  if (!m) return;
+  const [, startRow, endRow] = m;
+  const startRowIndex = Number(startRow) - 1;
+  const endRowIndex   = Number(endRow);
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: GSHEET_LOG_ID, fields: 'sheets.properties' });
+  const sheetId = meta.data.sheets.find(s => s.properties.title === tabName)?.properties.sheetId;
+  if (sheetId === undefined) return;
+
+  const requests = [{
+    repeatCell: {
+      range: { sheetId, startRowIndex, endRowIndex },
+      cell: { userEnteredFormat: { textFormat: { fontFamily: 'Prompt' } } },
+      fields: 'userEnteredFormat',
+    },
+  }];
+
+  for (const colName of ['date', 'request date', 'required date']) {
+    const colIdx = headers.findIndex(h => h?.toString().trim().toLowerCase() === colName);
+    if (colIdx < 0) continue;
+    requests.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex, endRowIndex, startColumnIndex: colIdx, endColumnIndex: colIdx + 1 },
+        cell: { userEnteredFormat: { numberFormat: { type: 'DATE', pattern: 'dd-mm-yyyy' } } },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    });
+  }
+
+  for (const colName of ['tax incl.', 'unit price']) {
+    const colIdx = headers.findIndex(h => h?.toString().trim().toLowerCase() === colName);
+    if (colIdx < 0) continue;
+    requests.push({
+      repeatCell: {
+        range: { sheetId, startRowIndex, endRowIndex, startColumnIndex: colIdx, endColumnIndex: colIdx + 1 },
+        cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: '0.00' } } },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    });
+  }
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: GSHEET_LOG_ID,
+    requestBody: { requests },
+  });
 }
 
 function today() {
@@ -528,7 +607,7 @@ async function appendToLog(exportPath) {
 // ─── STEP 11: VALIDATE (VENDOR + MIN ORDER) THEN APPEND ─────────────────────
 async function validateAndAppend(newRows, headers) {
   if (newRows.length === 0) {
-    return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: false };
+    return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: false, passingPRNumbers: [] };
   }
 
   log('Fetching vendor & minimum order reference from Google Sheet...');
@@ -538,12 +617,14 @@ async function validateAndAppend(newRows, headers) {
   } catch (e) {
     log(`WARNING: Could not fetch reference GSheet (${e.message}) — appending all rows without validation`);
     const sheets = await getSheetClient();
-    await sheets.spreadsheets.values.append({
+    const appendRes = await sheets.spreadsheets.values.append({
       spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
       valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
       requestBody: { values: newRows },
     });
-    return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true };
+    await clearAppendedFormatting(sheets, GSHEET_LOG_TAB, appendRes.data.updates?.updatedRange, headers);
+    // passingPRNumbers stays empty — unvalidated rows must never be auto-generated
+    return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true, passingPRNumbers: [] };
   }
   log(`Reference sheet loaded: ${refRows.length} rows`);
 
@@ -570,11 +651,12 @@ async function validateAndAppend(newRows, headers) {
     prGroups.get(prNum).push(row);
   }
 
-  const passingRows     = [];
-  let vendorFailCount   = 0;
-  let minOrderFailCount = 0;
-  const rejectedItems   = [];
-  const rejectedReasons = [];
+  const passingRows      = [];
+  const passingPRNumbers = [];
+  let vendorFailCount    = 0;
+  let minOrderFailCount  = 0;
+  const rejectedItems    = [];
+  const rejectedReasons  = [];
 
   for (const [prNum, rows] of prGroups) {
     let prRejected = false;
@@ -662,17 +744,19 @@ async function validateAndAppend(newRows, headers) {
       rejectedReasons.push(`${prNum}: ${rejReason}`);
     } else {
       passingRows.push(...rows);
+      passingPRNumbers.push(prNum);
     }
   }
 
   // Append only passing rows
   if (passingRows.length > 0) {
     const sheets = await getSheetClient();
-    await sheets.spreadsheets.values.append({
+    const appendRes = await sheets.spreadsheets.values.append({
       spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
       valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
       requestBody: { values: passingRows },
     });
+    await clearAppendedFormatting(sheets, GSHEET_LOG_TAB, appendRes.data.updates?.updatedRange, headers);
   }
 
   const totalRejected = rejectedItems.length;
@@ -687,6 +771,7 @@ async function validateAndAppend(newRows, headers) {
     items:     rejectedItems.join(', '),
     reasons:   rejectedReasons.join('; '),
     validationSkipped: false,
+    passingPRNumbers,
   };
 }
 
@@ -698,6 +783,27 @@ function cleanup({ filePath }) {
   } catch (e) {
     if (e.code !== 'ENOENT') log(`WARNING: Could not delete export file: ${e.message}`);
   }
+}
+
+// ─── STEP 13: GENERATE TO PO FOR PASSING PRs (--generate only) ──────────────
+// Deliberately NOT wrapped in withRetry (see header comment) — one attempt,
+// no auto-retry, so a mid-flow failure can't cause a re-click on real POs.
+async function generateApprovedPOs(page, prNumbers) {
+  if (prNumbers.length === 0) {
+    log('No PRs passed validation — nothing to generate');
+    return { attempted: false, executed: false, matched: [] };
+  }
+
+  step('13/13 generateApprovedPOs');
+  log(`Generating PO for ${prNumbers.length} passing PR(s): ${prNumbers.join(', ')}`);
+
+  // exportXLSX (step 9) left the header "select all" checkbox checked —
+  // clear it before selecting only the passing PR rows.
+  await resetSelection(page);
+
+  const matched  = await selectPRRows(page, prNumbers, TARGET_BUYER, log);
+  const executed = await executeOdooAction(page, 'approve', { testMode: TEST_MODE, log });
+  return { attempted: true, executed, matched };
 }
 
 // ─── OPERATOR ─────────────────────────────────────────────────────────────────
@@ -801,6 +907,7 @@ async function checkpointD(exportPaths, runStats) {
     runStats.rejectedMinOrder = rej.minOrder;
     runStats.rejectedItems    = rej.items;
     runStats.rejectionReasons = rej.reasons;
+    runStats.passingPRNumbers = rej.passingPRNumbers;
     if (rej.validationSkipped) {
       runStats.status = 'WARN';
       runStats.error  = 'Reference sheet unreachable — rows appended WITHOUT vendor/min-order validation';
@@ -820,6 +927,7 @@ async function checkpointD(exportPaths, runStats) {
     runId: RUN_ID, status: 'SUCCESS',
     exportedRows: null, appendedRows: null, skippedRows: null,
     rejectedRows: null, rejectedVendor: null, rejectedMinOrder: null, rejectedItems: null, rejectionReasons: null,
+    passingPRNumbers: [], generateAttempted: false, generateExecuted: false, generateMatched: [], generateError: null,
     stoppedAt: null, error: null,
   };
 
@@ -829,7 +937,31 @@ async function checkpointD(exportPaths, runStats) {
     await checkpointB(conn.page);
     const exportPaths = await checkpointC(conn.page);
     await checkpointD(exportPaths, runStats);
-    console.log(`\n[OPERATOR] RUN_ID: ${RUN_ID} — COMPLETED ${runStats.status === 'WARN' ? 'WITH WARNINGS' : 'SUCCESSFULLY'}`);
+
+    if (GENERATE) {
+      try {
+        const gen = await generateApprovedPOs(conn.page, runStats.passingPRNumbers || []);
+        runStats.generateAttempted = gen.attempted;
+        runStats.generateExecuted  = gen.executed;
+        runStats.generateMatched   = gen.matched;
+      } catch (err) {
+        // No retry here on purpose — a re-attempt could re-click an already-
+        // generated batch. Report and stop; does not overwrite an existing
+        // WARN status from validation.
+        runStats.generateAttempted = true;
+        runStats.generateError     = err.message;
+        if (runStats.status === 'SUCCESS') runStats.status = 'FAILED';
+        runStats.stoppedAt = '13/13 generateApprovedPOs';
+        console.error(`\n❌ Generate to PO failed: ${err.message}`);
+      }
+    }
+
+    console.log(`\n[OPERATOR] RUN_ID: ${RUN_ID} — COMPLETED ${runStats.status === 'WARN' ? 'WITH WARNINGS' : runStats.status === 'FAILED' ? 'WITH GENERATE FAILURE' : 'SUCCESSFULLY'}`);
+    if (GENERATE) {
+      const genResult = runStats.generateError ? 'FAILED' : !runStats.generateAttempted ? 'SKIPPED (none passing)' : TEST_MODE ? 'DRY-RUN' : 'EXECUTED';
+      console.log(`[GENERATE] Result: ${genResult}${runStats.generateError ? ` — ${runStats.generateError}` : ''}`);
+      for (const { prNumber, rowTexts } of runStats.generateMatched) console.log(`  PR [${prNumber}] — ${rowTexts.length} line(s)`);
+    }
   } catch (err) {
     runStats.status    = err.isEarlyExit ? 'WARN' : 'FAILED';
     runStats.stoppedAt = err.failedStep || '';
