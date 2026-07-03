@@ -1,19 +1,22 @@
 /**
  * ODOO Leftover-PR Action Tool
- * Approves (Generate to PO) or rejects (Cancel PR) a single PR that was left
- * over from odoo_pr_to_po.mjs's vendor/min-order validation, after daily
- * human review.
+ * Approves (Generate to PO) or rejects (Cancel PR) one or more PRs left over
+ * from odoo_pr_to_po.mjs's vendor/min-order validation, after daily human
+ * review. Multiple PRs are checked in the same Odoo list and actioned with
+ * ONE Actions click — Odoo processes only the checked rows.
  *
  * Usage:
- *   node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER> approve [--test] [--headless]
- *   node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER> reject  [--test] [--headless]
+ *   node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> approve [--test] [--headless]
+ *   node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> reject  [--test] [--headless]
  *
- * --test: runs the full flow (login, navigate, find PR, select row, open
- * Actions menu) but skips the final click. No real Odoo state change.
+ * --test: runs the full flow (login, navigate, find each PR, check its row,
+ * open Actions menu) but skips the final click. No real Odoo state change.
  *
  * WARNING: "Generate to PO" has no Odoo confirmation dialog — clicking it
- * immediately creates a real PO. "Cancel PR" does show a confirm dialog,
- * which this script auto-accepts. Neither action can be undone from here.
+ * immediately creates real POs for every checked row. "Cancel PR" does show
+ * a confirm dialog, which this script auto-accepts. Neither action can be
+ * undone from here. All PR numbers must be found before anything is
+ * checked — if any one is missing, the whole run aborts with none acted on.
  */
 
 import { chromium } from 'playwright';
@@ -65,10 +68,13 @@ const BU_ODOO_PREFIX = {
   PPAT:  '[PPAT:00075]',
 };
 
-const USAGE = 'Usage: node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER> <approve|reject> [--test] [--headless]';
+const USAGE = 'Usage: node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> <approve|reject> [--test] [--headless]';
 const _pos = process.argv.slice(2).filter(a => !a.startsWith('--'));
-const [PROFILE_KEY, TARGET_BU_CODE, PR_NUMBER, ACTION] = _pos;
-if (!PROFILE_KEY || !TARGET_BU_CODE || !PR_NUMBER || !ACTION) throw new Error(USAGE);
+const [PROFILE_KEY, TARGET_BU_CODE, PR_NUMBERS_ARG, ACTION] = _pos;
+if (!PROFILE_KEY || !TARGET_BU_CODE || !PR_NUMBERS_ARG || !ACTION) throw new Error(USAGE);
+
+const PR_NUMBERS = [...new Set(PR_NUMBERS_ARG.split(',').map(s => s.trim()).filter(Boolean))];
+if (PR_NUMBERS.length === 0) throw new Error(USAGE);
 
 const _prof = PROFILES[PROFILE_KEY];
 if (!_prof) throw new Error(`Unknown profile "${PROFILE_KEY}". Valid: ${Object.keys(PROFILES).join(', ')}\n${USAGE}`);
@@ -220,22 +226,37 @@ async function expandBuyerGroup(page) {
   log(`${TARGET_BUYER} expanded`);
 }
 
-// ─── STEP 9: FIND & SELECT THE TARGET PR ROW ─────────────────────────────────
-async function selectPRRow(page) {
-  log(`Finding row for PR ${PR_NUMBER}...`);
-  const row = page.locator('tr.o_data_row').filter({ hasText: PR_NUMBER });
-  const count = await row.count();
-  if (count === 0) throw new Error(`PR "${PR_NUMBER}" not found in ${TARGET_BUYER} group — already processed, or wrong BU/profile?`);
-  if (count > 1) throw new Error(`PR "${PR_NUMBER}" matched ${count} rows — expected exactly 1`);
+// ─── STEP 9: FIND & SELECT THE TARGET PR ROW(S) ──────────────────────────────
+// This list is per PR-LINE, not per-PR — a PR with multiple order lines shows
+// one row per line, all sharing the same PR number. Validates every PR number
+// resolves to at least one line row BEFORE checking any of them — a batch run
+// either fully qualifies or aborts with nothing checked, never a partial check.
+async function selectPRRows(page) {
+  const matched = [];
+  for (const prNumber of PR_NUMBERS) {
+    log(`Finding line row(s) for PR ${prNumber}...`);
+    const rows = page.locator('tr.o_data_row').filter({ hasText: prNumber });
+    const count = await rows.count();
+    if (count === 0) throw new Error(`PR "${prNumber}" not found in ${TARGET_BUYER} group — already processed, or wrong BU/profile? (nothing checked yet)`);
 
-  const rowText = (await row.first().innerText()).replace(/\s+/g, ' ').trim();
-  log(`Matched row: ${rowText}`);
+    const rowTexts = [];
+    for (let i = 0; i < count; i++) {
+      rowTexts.push((await rows.nth(i).innerText()).replace(/\s+/g, ' ').trim());
+    }
+    log(`Matched ${count} line row(s) for PR ${prNumber}`);
+    matched.push({ prNumber, rows, count, rowTexts });
+  }
 
-  // Scoped to the matched row — NOT the header "select all" checkbox
-  await row.first().locator('.o_list_record_selector.user-select-none > .o-checkbox').click();
-  await page.waitForTimeout(500);
-  log('Row selected');
-  return rowText;
+  for (const { prNumber, rows, count } of matched) {
+    // Scoped to each matched row — NOT the header "select all" checkbox
+    for (let i = 0; i < count; i++) {
+      await rows.nth(i).locator('.o_list_record_selector.user-select-none > .o-checkbox').click();
+      await page.waitForTimeout(300);
+    }
+    log(`Checked ${count} row(s) for PR ${prNumber}`);
+  }
+
+  return matched.map(({ prNumber, rowTexts }) => ({ prNumber, rowTexts }));
 }
 
 // ─── STEP 10: EXECUTE THE ACTION ─────────────────────────────────────────────
@@ -258,7 +279,7 @@ async function executeAction(page) {
   if (await item.count() === 0) throw new Error(`Menu item "${menuItemName}" not found in Actions dropdown`);
 
   if (TEST_MODE) {
-    log(`[--test] Would click "${menuItemName}" now — skipping (no real Odoo action taken)`);
+    log(`[--test] Would click "${menuItemName}" now for ${PR_NUMBERS.length} PR(s) — skipping (no real Odoo action taken)`);
     await page.keyboard.press('Escape');
     return false;
   }
@@ -279,12 +300,12 @@ async function executeAction(page) {
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 (async () => {
-  console.log(`\n── PR Action ── ${ACTION.toUpperCase()} PR ${PR_NUMBER} — Profile: ${PROFILE_KEY} | BU: ${TARGET_BU_CODE}${TEST_MODE ? ' | --test (dry run)' : ''}`);
+  console.log(`\n── PR Action ── ${ACTION.toUpperCase()} ${PR_NUMBERS.length} PR(s) [${PR_NUMBERS.join(', ')}] — Profile: ${PROFILE_KEY} | BU: ${TARGET_BU_CODE}${TEST_MODE ? ' | --test (dry run)' : ''}`);
 
   let browser;
-  let result   = 'FAILED';
+  let result  = 'FAILED';
   let errorMsg = null;
-  let rowText  = null;
+  let matched  = [];
 
   try {
     const conn = await connectAndNavigate();
@@ -296,7 +317,7 @@ async function executeAction(page) {
     await removeFilter(conn.page);
     await groupByBuyer(conn.page);
     await expandBuyerGroup(conn.page);
-    rowText = await selectPRRow(conn.page);
+    matched = await selectPRRows(conn.page);
     const executed = await executeAction(conn.page);
     result = executed ? 'EXECUTED' : 'DRY-RUN';
   } catch (err) {
@@ -304,8 +325,11 @@ async function executeAction(page) {
     console.error(`\n❌ ${err.message}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
-    console.log(`\n[SUMMARY] ACTION: ${ACTION} | PR: ${PR_NUMBER} | BU: ${TARGET_BU_CODE} | Profile: ${PROFILE_KEY} | Result: ${result}`);
-    if (rowText)  console.log(`  Row: ${rowText}`);
+    console.log(`\n[SUMMARY] ACTION: ${ACTION} | PRs: ${PR_NUMBERS.length} [${PR_NUMBERS.join(', ')}] | BU: ${TARGET_BU_CODE} | Profile: ${PROFILE_KEY} | Result: ${result}`);
+    for (const { prNumber, rowTexts } of matched) {
+      console.log(`  PR [${prNumber}] — ${rowTexts.length} line(s):`);
+      for (const t of rowTexts) console.log(`    ${t}`);
+    }
     if (errorMsg) console.log(`  Error: ${errorMsg}`);
     if (result === 'FAILED') process.exit(1);
   }
