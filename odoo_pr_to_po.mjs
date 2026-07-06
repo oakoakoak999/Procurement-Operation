@@ -1,46 +1,26 @@
 /**
- * ODOO PR → PO Workflow Automation (v2)
- * BU: PSV | Credentials loaded from .env
- * Exports Generate PR to PO (SUPPLY_BUYER) and appends to Log file
+ * ODOO PR → PO Workflow Automation
+ * Exports Generate-PR-to-PO rows for a BU/profile, validates each against
+ * the vendor + min-order reference sheet, and appends the result to that
+ * BU's log sheet.
  *
- * v2 changes vs original:
- * - Removed dead code: launchChrome(), findLogFile(), logPath threading, duplicate fs import
- * - Simplified operator layer: withRetry() replaces CP/structuredLog/diagnose framework
- * - Fixed: checkpoint C now actually re-navigates on retry (attempt was never wired)
- * - Fixed: export route handler unregistered after capture (no stacking on retry)
- * - Fixed: Tax incl. parsing strips commas (consistent with dedup normalization)
- * - Fixed: PLPN1/PLPN2 resolved from full company prefix, not just letters
- * - Changed: run is marked WARN (not SUCCESS) when reference sheet is unreachable
- *   and rows are appended without validation
- *
- * --generate (opt-in, 2026-07-03): after validation, also clicks "Generate to
- * PO" in Odoo for every PR that passed vendor + minimum-order checks. Without
- * this flag the script behaves exactly as before — export, validate, log —
- * and never clicks anything in Odoo, which is what makes the default mode
- * safe to run unattended (cron). PRs that fail validation are never touched
- * by --generate; they still just get logged as leftovers for human review via
- * odoo_pr_action.mjs.
- *
- * --test (only meaningful with --generate): runs the real generate flow up to
- * opening the Actions menu, then stops before the click — same dry-run
- * pattern as odoo_pr_action.mjs, so a batch can be replayed against the same
- * sample PRs without consuming them into real POs.
- *
- * The generate step runs once, AFTER all retried checkpoints — deliberately
- * NOT wrapped in withRetry. "Generate to PO" has no confirm dialog, so a
+ * --generate: after validation, also clicks "Generate to PO" in Odoo for PRs
+ * that passed. Without it, the script only exports/validates/logs and never
+ * touches Odoo, which is what makes default mode safe to run unattended.
+ * The click runs once, AFTER all retried checkpoints, deliberately NOT
+ * wrapped in withRetry: "Generate to PO" has no confirm dialog, so a
  * retry-driven re-click on the same batch would create duplicate real POs.
- * If it fails, the run reports FAILED and stops; nothing auto-retries it.
  *
- * 2nd tier vendor (2026-07-03): reference sheet gained a "2nd tier Vendor"
- * column — "|"-separated list of "<code> <name>" entries, meant to hold
- * vendors a human has previously approved as a one-off (see
- * odoo_pr_action.mjs's promote-to-tier2 step). Vendor check now passes if
- * the log vendor matches EITHER the 1st tier Vendor Name/Code OR any entry
- * in the 2nd tier Vendor list. Runs track which PRs passed only via 2nd
- * tier (runStats.appendedTier2Vendor / tier2PassPRNumbers, Execute Log
- * column O) so an unattended --generate run stays distinguishable from a
- * primary-criteria pass — 2nd tier means "trusted because a human already
- * approved it once," not "matches the stated procurement policy."
+ * --test (with --generate only): opens the Actions menu but stops before the
+ * click, so a batch can be replayed against the same PRs without consuming
+ * them into real POs.
+ *
+ * 2nd tier vendor: the reference sheet's "2nd tier Vendor" column holds
+ * vendors a human has previously approved as a one-off (promoted via
+ * promote_vendor_tier2.mjs). Vendor check passes on EITHER the 1st tier
+ * Vendor Name/Code OR a 2nd tier match — tracked separately (Execute Log
+ * column O) since a 2nd tier pass means "a human already approved this,"
+ * not "meets the stated procurement policy."
  */
 
 import { chromium } from 'playwright';
