@@ -164,10 +164,12 @@ async function stagePrint() {
 
   log('PRINT', 'Launching Chrome...');
   const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
-  const context = await browser.newContext();
-  const page    = await context.newPage();
-
+  let page;
   try {
+    // Inside the try so a newContext/newPage failure still hits the finally —
+    // withRetry reruns stagePrint, so each leak would be one orphan Chrome.
+    const context = await browser.newContext();
+    page = await context.newPage();
     log('PRINT', 'Selecting database...');
     await page.goto(`${ODOO_URL}/web/database/selector`);
     await page.waitForSelector('a[href*="princ-smarterp-prod-base-"]');
@@ -298,6 +300,11 @@ async function stagePrint() {
       );
       await page.locator('.dropdown-item').filter({ hasText: 'Purchase Order' }).first().click();
       const pdfBuffer = await (await pdfDone).body();
+      // The response filter is loose (any /report/ URL matches) — a JSON or
+      // HTML error response written as .pdf would only surface in the split
+      // stage as a cryptic pdf-parse failure. Fail here, where retry helps.
+      if (!pdfBuffer.subarray(0, 5).toString('latin1').startsWith('%PDF'))
+        throw new Error(`Report response is not a PDF (starts with "${pdfBuffer.subarray(0, 20).toString('latin1')}") — report render failed?`);
       const filename  = `PO-${TARGET_BU_CODE}-${DATE_SLUG}-p${pageNum}.pdf`;
       const outPath   = join(DOWNLOADS_DIR, filename);
       writeFileSync(outPath, pdfBuffer);
@@ -483,11 +490,28 @@ async function authorizeGDrive() {
     const server = createServer((req, res) => {
       const u = new URL(req.url, 'http://localhost:3000');
       if (u.pathname === '/callback') {
+        const authCode = u.searchParams.get('code');
+        if (!authCode) {
+          // Consent denied / error redirect — reject here, or getToken(null)
+          // fails later with a baffling Google error
+          res.end('<h1>Authorization failed — no code received.</h1>');
+          clearTimeout(timer);
+          server.close();
+          reject(new Error(`OAuth callback returned no code (${u.searchParams.get('error') || 'consent denied?'})`));
+          return;
+        }
         res.end('<h1>Authorized! You can close this tab.</h1>');
         clearTimeout(timer);
         server.close();
-        resolve(u.searchParams.get('code'));
+        resolve(authCode);
       }
+    });
+    // Without this, EADDRINUSE (port 3000 busy — e.g. PR2PO's OAuth flow)
+    // is an unhandled 'error' event that crashes the process outside the
+    // promise: no SUMMARY block, no clean FAILED path
+    server.on('error', err => {
+      clearTimeout(timer);
+      reject(new Error(`OAuth callback server failed: ${err.message}`));
     });
     server.listen(3000);
     timer = setTimeout(() => { server.close(); reject(new Error('Auth timeout (5 min)')); }, 300_000);
