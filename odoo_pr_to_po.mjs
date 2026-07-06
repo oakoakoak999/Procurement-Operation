@@ -333,6 +333,19 @@ async function clearAppendedFormatting(sheets, tabName, updatedRange, headers = 
   });
 }
 
+// Formatting is cosmetic — it must never fail the run. The append has already
+// landed by this point, so letting a formatting error propagate would make
+// checkpoint D's withRetry re-run appendToLog, see its own freshly-appended
+// rows as duplicates, and EarlyExit "all duplicates" — silently skipping
+// generation for PRs that were in fact appended.
+async function tryFixFormatting(sheets, appendRes, headers) {
+  try {
+    await clearAppendedFormatting(sheets, GSHEET_LOG_TAB, appendRes.data.updates?.updatedRange, headers);
+  } catch (e) {
+    log(`WARNING: Could not clear appended-row formatting: ${e.message}`);
+  }
+}
+
 function today() {
   const d = new Date();
   const dd = String(d.getDate()).padStart(2, '0');
@@ -652,7 +665,7 @@ async function validateAndAppend(newRows, headers) {
       valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
       requestBody: { values: newRows },
     });
-    await clearAppendedFormatting(sheets, GSHEET_LOG_TAB, appendRes.data.updates?.updatedRange, headers);
+    await tryFixFormatting(sheets, appendRes, headers);
     // passingPRNumbers stays empty — unvalidated rows must never be auto-generated
     return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true, passingPRNumbers: [], tier2Count: 0 };
   }
@@ -802,7 +815,7 @@ async function validateAndAppend(newRows, headers) {
       valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
       requestBody: { values: passingRows },
     });
-    await clearAppendedFormatting(sheets, GSHEET_LOG_TAB, appendRes.data.updates?.updatedRange, headers);
+    await tryFixFormatting(sheets, appendRes, headers);
   }
 
   const totalRejected = rejectedItems.length;

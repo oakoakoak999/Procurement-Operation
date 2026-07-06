@@ -20,7 +20,12 @@ export async function selectPRRows(page, prNumbers, buyerLabel, log = () => {}) 
   const matched = [];
   for (const prNumber of prNumbers) {
     log(`Finding line row(s) for PR ${prNumber}...`);
-    const rows = page.locator('tr.o_data_row').filter({ hasText: prNumber });
+    // Match on a cell whose text is EXACTLY the PR number — substring hasText
+    // would also catch prefix collisions (PR00123 inside PR001234) or the
+    // number appearing in another column, and check the wrong PR's rows.
+    const rows = page.locator('tr.o_data_row').filter({
+      has: page.getByRole('cell', { name: prNumber, exact: true }),
+    });
     const count = await rows.count();
     if (count === 0) throw new Error(`PR "${prNumber}" not found in ${buyerLabel} group — already processed, or wrong BU/profile? (nothing checked yet)`);
 
