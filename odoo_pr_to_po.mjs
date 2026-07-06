@@ -589,11 +589,22 @@ async function exportXLSX(page) {
 
   log(`Saved export to: ${filePath}`);
 
-  // Close the export dialog if still open
+  // Close the export dialog and VERIFY it's gone. The route interception
+  // fulfills the export request with a fake response, so Odoo never
+  // auto-dismisses the dialog — and a lingering modal intercepts every later
+  // page click. Caught live 20260706-1453: --generate's resetSelection timed
+  // out behind this modal. Fail loud here (checkpoint B retries) rather than
+  // in step 13 (deliberately unretried).
   const dialog = page.locator('.o_export_data_dialog');
   if (await dialog.isVisible()) {
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
+    try {
+      await dialog.waitFor({ state: 'hidden', timeout: 3000 });
+    } catch {
+      log('Escape did not close export dialog — clicking close button...');
+      await page.locator('.o_export_data_dialog').locator('.btn-close, button[aria-label="Close"]').first().click();
+      await dialog.waitFor({ state: 'hidden', timeout: 5000 });
+    }
     log('Export dialog closed');
   }
 
@@ -740,6 +751,10 @@ async function validateAndAppend(newRows, headers) {
   let minOrderFailCount  = 0;
   const rejectedItems    = [];
   const rejectedReasons  = [];
+  // Structured (not display-text) rejection detail, for Memory.md's Pending
+  // Leftover PRs table — kept separate from rejReason below so that string's
+  // wording can change without breaking the memory writer's parsing.
+  const pendingDetails   = [];
 
   const tier2PassPRNumbers = [];
 
@@ -899,6 +914,13 @@ async function generateApprovedPOs(page, prNumbers) {
 
   step('13/13 generateApprovedPOs');
   log(`Generating PO for ${prNumbers.length} passing PR(s): ${prNumbers.join(', ')}`);
+
+  // Any modal left open by an earlier step intercepts every click below,
+  // and this step deliberately has no retry — abort loud instead of timing
+  // out row-by-row against an invisible wall.
+  const openModal = page.locator('.modal.d-block');
+  if (await openModal.count() > 0)
+    throw new Error('A modal dialog is still open on the page — refusing to start row selection (nothing clicked)');
 
   // exportXLSX (step 9) left the header "select all" checkbox checked —
   // clear it before selecting only the passing PR rows.
