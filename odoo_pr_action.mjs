@@ -118,9 +118,14 @@ function log(msg) {
 async function connectAndNavigate() {
   log('Launching Chrome...');
   const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
-  const context = await browser.newContext();
-  const page    = await context.newPage();
-  return { browser, context, page };
+  try {
+    const context = await browser.newContext();
+    const page    = await context.newPage();
+    return { browser, context, page };
+  } catch (err) {
+    await browser.close().catch(() => {}); // main never gets the handle if this throws — close here or leak Chrome
+    throw err;
+  }
 }
 
 // ─── STEP 2: SELECT DATABASE ──────────────────────────────────────────────────

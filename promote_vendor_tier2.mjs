@@ -37,6 +37,10 @@ const [BU_CODE, ITEM_CODE, VENDOR_CODE, ...nameParts] = process.argv.slice(2);
 const VENDOR_NAME = nameParts.join(' ').trim();
 const USAGE = 'Usage: node promote_vendor_tier2.mjs <BU_CODE> <ITEM_CODE> <VENDOR_CODE> <VENDOR_NAME>';
 if (!BU_CODE || !ITEM_CODE || !VENDOR_CODE || !VENDOR_NAME) throw new Error(USAGE);
+// "|" is the 2nd tier Vendor list separator — a pipe inside a name would
+// split into a phantom extra vendor entry on the next parse.
+if (VENDOR_CODE.includes('|') || VENDOR_NAME.includes('|'))
+  throw new Error('VENDOR_CODE / VENDOR_NAME must not contain "|" (reserved as the 2nd tier Vendor separator)');
 
 async function getSheetClient() {
   const { google } = await import('googleapis');
@@ -47,6 +51,14 @@ async function getSheetClient() {
   const auth = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000/callback');
   auth.setCredentials(JSON.parse(readFileSync(GSHEETS_TOKEN_FILE, 'utf8')));
   return google.sheets({ version: 'v4', auth });
+}
+
+// 0-indexed column → A1 letter(s). Single fromCharCode breaks past Z (idx 25);
+// this stays correct if the read range ever widens beyond column Z.
+function colToA1(idx) {
+  let s = '';
+  for (let n = idx + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
 }
 
 // Same "|"-separated "<code> <name>" format as odoo_pr_to_po.mjs's parseTier2Vendors.
@@ -96,7 +108,7 @@ function parseTier2Vendors(raw) {
   const newEntry   = `${VENDOR_CODE} ${VENDOR_NAME}`;
   const newValue   = existingRaw.trim() ? `${existingRaw.trim()} | ${newEntry}` : newEntry;
   const sheetRow   = rowIndex + 1; // rows[] is 0-indexed and includes the header, so this is the 1-indexed sheet row
-  const colLetter  = String.fromCharCode('A'.charCodeAt(0) + tier2Idx);
+  const colLetter  = colToA1(tier2Idx);
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: GSHEET_REF_ID,

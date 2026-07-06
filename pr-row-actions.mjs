@@ -40,12 +40,29 @@ export async function selectPRRows(page, prNumbers, buyerLabel, log = () => {}) 
   }
 
   for (const { prNumber, rows, count } of matched) {
-    // Scoped to each matched row — NOT the header "select all" checkbox
+    // Scoped to each matched row — NOT the header "select all" checkbox.
+    // Check-if-unchecked, never blind-click: a click TOGGLES, so a row that
+    // somehow started checked would be silently UNchecked and escape the
+    // irreversible action while the log claims it was included.
     for (let i = 0; i < count; i++) {
+      const input = rows.nth(i).locator('.o_list_record_selector input[type="checkbox"]');
+      if (await input.isChecked()) {
+        log(`Row ${i + 1} of PR ${prNumber} already checked — leaving as-is`);
+        continue;
+      }
       await rows.nth(i).locator('.o_list_record_selector.user-select-none > .o-checkbox').click();
       await page.waitForTimeout(300);
     }
     log(`Checked ${count} row(s) for PR ${prNumber}`);
+  }
+
+  // Verify every matched row actually ended up checked BEFORE anyone opens
+  // the Actions menu — if Odoo dropped a click, abort with nothing actioned.
+  for (const { prNumber, rows, count } of matched) {
+    for (let i = 0; i < count; i++) {
+      if (!await rows.nth(i).locator('.o_list_record_selector input[type="checkbox"]').isChecked())
+        throw new Error(`Row ${i + 1} of PR ${prNumber} is not checked after selection — aborting, no action taken`);
+    }
   }
 
   return matched.map(({ prNumber, rowTexts }) => ({ prNumber, rowTexts }));
