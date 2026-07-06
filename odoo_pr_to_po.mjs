@@ -102,6 +102,29 @@ const BU_ODOO_PREFIX = {
 const PREFIX_TO_BU = Object.fromEntries(
   Object.entries(BU_ODOO_PREFIX).map(([code, prefix]) => [prefix, code])
 );
+// Each BU's own "<BUCODE> Log PR-PO 2026" sheet, living in its Drive folder
+// under the shared PR2PO drive (replaces the single shared GSHEET_LOG_ID).
+const BU_LOG_SHEETS = {
+  PPNP:  '1QKgY5fh4aaGGrTzRJlO6z7nvu6IjzrGpOqo9UMsaLQs',
+  PSV:   '1eiuzPvsS9li3H-81q_8A1l1BwJGenbxJGh0NHO_7Fzw',
+  PPCH:  '1zfcWM58Hw_lOg3xQr983tSi9CJrohpNSjwX_DRwtpkY',
+  PUTD:  '18zlyVh1afnfhXMBRqlY52ELU6Pmp2M_2H-2iSK9SXHI',
+  PSUV:  '1YW_MHogZpf9w4t0MGMiBNwPVO9L0TikLB1ME0PTZh18',
+  PUTH:  '15yozB4bUZqEGkKuXKp3t32wOlTjk-3VfkyeNbeEZcrs',
+  PLPN1: '1r8_v5OQtLlQvjilNJ_UqNvX8vuj-4ooNwHHTZQi4b8c',
+  PSSK:  '18EpoJD9QyEeT3NF9Nwk0cn6xyRnXDudVXsO-HAcLUho',
+  PCPN:  '1IMeoKPRZCiFhxRmk-udDxrv6N8nbEnf0C1MaqHJr1rI',
+  PUBN:  '102o5OA4ycqDz0cRNNMHKhu1LtKUqYT_8LiLR8-VwXAY',
+  KBKJ:  '1gwadwrNxXDqhr53gJW7FWqZKtLVph2suLyuK5QRayus',
+  PSNK:  '1lteakhBG02GdgdYeL4LjJKql6uU_o9zgSfwouWzS7YU',
+  PPRP:  '1jW922u_KbWO_Fl57rxYgLE-PVek3Ytf7gFBbhBSoem4',
+  PMDH:  '1C_6Jf-QU96ChRf9zETSaYTcAN8lH5ZjygIZ6gI6YlMY',
+  PLPN2: '1MmHYw7Sib7BvpsYzFAIZvmSlGYtWkgqyLiMpyTN1mdQ',
+  PKPP:  '10iXenl1dSWyXgY6fD5-O3x7FzzXXrgV_vA6O3mxvbh8',
+  PKAN:  '1gDW547a8oKngt3Hb8S1LOzyDSwqqfGltDqaIoJIOQK4',
+  PKRT:  '1jVh_oUN9HhVY6Wz-D7lByjG6l2CZza1sbRrSWH3fE9s',
+  PPAT:  '1b_6kM520q7tfWJXS5EaH5sIn4YfzBSWh8F_X1U6UeVI',
+};
 const _prof = PROFILES[PROFILE_KEY];
 if (!_prof) {
   const swapped = BU_ODOO_PREFIX[PROFILE_KEY] && PROFILES[TARGET_BU_CODE];
@@ -118,8 +141,7 @@ const TEST_MODE      = process.argv.includes('--test');
 const DOWNLOAD_PATH   = `${process.env.USERPROFILE}\\Downloads`;
 const GSHEET_REF_ID  = '1HaJt0f0qVnY2vFs193ZVXdI5xhenKMTYkr-TZcj3Rzo'; // vendor + min order reference
 const GSHEET_REF_GID = '139595673'; // tab: data_view
-const GSHEET_LOG_ID  = process.env.GSHEET_LOG_ID; // each deployment's own log sheet — set in .env
-if (!GSHEET_LOG_ID) throw new Error('GSHEET_LOG_ID not set in .env');
+const GSHEET_LOG_ID  = BU_LOG_SHEETS[TARGET_BU_CODE] ?? (() => { throw new Error(`No log sheet configured for BU "${TARGET_BU_CODE}"`); })();
 const GSHEET_LOG_TAB      = _prof.logTab;
 const CONFIG              = { profileKey: PROFILE_KEY, bu: TARGET_BU_CODE, buyer: TARGET_BUYER, logTab: GSHEET_LOG_TAB };
 const GSHEET_EXEC_TAB     = 'Execute Log';
