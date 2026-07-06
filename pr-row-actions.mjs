@@ -19,6 +19,8 @@ export const ACTION_MENU_ITEM = {
 export async function selectPRRows(page, prNumbers, buyerLabel, log = () => {}) {
   const matched = [];
   for (const prNumber of prNumbers) {
+    if (!prNumber?.toString().trim())
+      throw new Error('Empty PR number in selection list — refusing to match (could select unrelated rows). Nothing checked yet.');
     log(`Finding line row(s) for PR ${prNumber}...`);
     // Match on a cell whose text is EXACTLY the PR number — substring hasText
     // would also catch prefix collisions (PR00123 inside PR001234) or the

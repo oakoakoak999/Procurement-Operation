@@ -249,6 +249,12 @@ async function getSheetClient() {
     return google.sheets({ version: 'v4', auth });
   }
 
+  // Interactive OAuth needs a human — in headless (cron) mode, fail fast
+  // instead of hanging forever waiting on a localhost callback no one will
+  // ever complete (the hang would also never write a FAILED Execute Log row).
+  if (HEADLESS)
+    throw new Error(`Google Sheets token missing (${GSHEETS_TOKEN_FILE}) — run once without --headless to authorize`);
+
   // First run only: open browser for OAuth
   const authUrl = auth.generateAuthUrl({
     access_type: 'offline',
@@ -258,13 +264,14 @@ async function getSheetClient() {
   log(`\nOpen this URL to authorize Google Sheets access:\n${authUrl}\n`);
 
   const { createServer } = await import('http');
-  const code = await new Promise(resolve => {
+  const code = await new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const u = new URL(req.url, 'http://localhost:3000');
       const c = u.searchParams.get('code');
       if (c) { res.end('<h2>Done! You can close this tab.</h2>'); server.close(); resolve(c); }
       else res.end('Waiting...');
     }).listen(3000);
+    server.on('error', reject); // e.g. port 3000 already in use — reject instead of crashing uncaught
     log('Waiting for OAuth callback on http://localhost:3000/callback ...');
   });
 
@@ -368,10 +375,15 @@ function buFromCompany(company) {
 // ─── STEP 1: LAUNCH & CONNECT ────────────────────────────────────────────────
 async function connectAndNavigate() {
   log('Launching Chrome...');
-  const browser  = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
-  const context  = await browser.newContext();
-  const page     = await context.newPage();
-  return { browser, context, page };
+  const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
+  try {
+    const context = await browser.newContext();
+    const page    = await context.newPage();
+    return { browser, context, page };
+  } catch (err) {
+    await browser.close().catch(() => {}); // don't leak the Chrome process across retries
+    throw err;
+  }
 }
 
 // ─── STEP 2: SELECT DATABASE ──────────────────────────────────────────────────
@@ -530,8 +542,10 @@ async function exportXLSX(page) {
   await page.click('#o_radioxlsx');
   await page.waitForTimeout(300);
 
-  // Intercept the export response via network route
-  const filePath = `${DOWNLOAD_PATH}\\odoo_export_temp.xlsx`;
+  // Intercept the export response via network route. BU + profile + RUN_ID in
+  // the filename so concurrent runs (multi-BU cron) can't overwrite each
+  // other's export and validate/append another BU's rows.
+  const filePath = `${DOWNLOAD_PATH}\\odoo_export_${TARGET_BU_CODE}_${PROFILE_KEY}_${RUN_ID}.xlsx`;
   const ROUTE_URL = '**/web/export/xlsx';
   let captured = false;
 
@@ -608,6 +622,9 @@ async function appendToLog(exportPath) {
   const productIdx = dstHeaders.findIndex(h => h?.toString().trim().toLowerCase() === 'product');
   const qtyIdx     = dstHeaders.findIndex(h => h?.toString().trim().toLowerCase() === 'quantity');
   const unitPrIdx  = dstHeaders.findIndex(h => h?.toString().trim().toLowerCase() === 'unit price');
+  // Without this column, dedup keys and --generate's PR grouping both silently
+  // break (every row would key/group on "") — fail loudly instead.
+  if (prNumIdx < 0) throw new Error(`Log tab "${GSHEET_LOG_TAB}" has no "Purchase Number" header column`);
 
   const normNum = v => {
     if (v === null || v === undefined || v === '') return '';
@@ -998,10 +1015,11 @@ async function checkpointD(exportPaths, runStats) {
   };
 
   let conn;
+  let exportPaths;
   try {
     conn = await checkpointA();
     await checkpointB(conn.page);
-    const exportPaths = await checkpointC(conn.page);
+    exportPaths = await checkpointC(conn.page);
     await checkpointD(exportPaths, runStats);
 
     if (GENERATE) {
@@ -1038,6 +1056,10 @@ async function checkpointD(exportPaths, runStats) {
     const print = err.isEarlyExit ? console.log : console.error;
     print(`\n[OPERATOR] RUN_ID: ${RUN_ID} — ${runStats.status}: ${err.message}`);
   } finally {
+    // Belt-and-braces: if checkpoint D failed before its own cleanup, don't
+    // leave the exported procurement data sitting in Downloads (ENOENT-safe
+    // no-op when cleanup already ran).
+    if (exportPaths) cleanup(exportPaths);
     await Promise.all([
       conn?.browser ? conn.browser.close().catch(() => {}) : Promise.resolve(),
       writeExecuteLog(runStats),
