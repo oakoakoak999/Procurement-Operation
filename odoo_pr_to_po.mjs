@@ -126,9 +126,6 @@ const GSHEET_LOG_TAB      = _prof.logTab;
 const CONFIG              = { profileKey: PROFILE_KEY, bu: TARGET_BU_CODE, buyer: TARGET_BUYER, logTab: GSHEET_LOG_TAB };
 const GSHEET_EXEC_TAB     = 'Execute Log';
 const GSHEETS_TOKEN_FILE  = join(__dir, '.gsheets-token.json');
-// Appended (2nd Tier Vendor) added as column O (2026-07-03) — appended at the
-// end, not inserted mid-row, so historical rows' existing columns don't shift.
-const EXEC_LOG_HEADERS    = ['Run ID','Date','Time','Status','Exported Rows','Appended Rows','Skipped (Duplicates)','Rejected (Total)','Rejected (Vendor)','Rejected (Min Order)','Rejected Items','Rejection Reasons','Stopped At','Error','Appended (2nd Tier Vendor)'];
 
 // Column name overrides: source header → dest header (when names differ)
 const COL_NAME_OVERRIDES = {
@@ -194,15 +191,32 @@ async function fetchGSheetCSV() {
 
   const csv = await fetchUrl(startUrl);
   const lines = csv.split('\n').filter(l => l.trim());
-  const headers = parseCSVLine(lines[0]).map(h => h.trim());
-  return lines.slice(1).map(line => {
+  const headers = parseCSVLine(lines[0] || '').map(h => h.trim());
+
+  // A restricted sheet or renamed tab still returns HTTP 200 — but with a
+  // Google login/HTML page instead of CSV. Parsing that yields junk headers,
+  // every refMap lookup misses, and validation silently passes EVERYTHING
+  // (fail-open — --generate would act on it). Verify the response actually
+  // looks like the reference sheet; throwing here lands in validateAndAppend's
+  // existing catch → WARN + unvalidated append + no generation (fail-closed).
+  const required = ['bu', 'order_item_code', 'Vendor Code', 'Vendor Name', 'Minimum Order'];
+  const missing  = required.filter(h => !headers.includes(h));
+  if (missing.length)
+    throw new Error(`Reference sheet response is missing column(s) [${missing.join(', ')}] — sheet access restricted, or headers renamed?`);
+
+  const rows = lines.slice(1).map(line => {
     const vals = parseCSVLine(line);
     const obj = {};
     headers.forEach((h, i) => obj[h] = (vals[i] || '').trim());
     return obj;
   });
+  if (rows.length === 0) throw new Error('Reference sheet returned zero data rows — tab cleared?');
+  return rows;
 }
 
+// Row order must match the Execute Log tab's headers (A→O). New columns are
+// appended at the end, never inserted mid-row, so historical rows' existing
+// columns don't shift ("Appended (2nd Tier Vendor)" = column O, 2026-07-03).
 async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skippedRows, rejectedRows, rejectedVendor, rejectedMinOrder, rejectedItems, rejectionReasons, stoppedAt, error, appendedTier2Vendor }) {
   try {
     const sheets = await getSheetClient();
@@ -642,10 +656,19 @@ async function appendToLog(exportPath) {
   const srcProductIdx   = srcHeaders.indexOf('Product');
   const srcQtyIdx       = srcHeaders.indexOf('Quantity');
   const srcUnitPriceIdx = srcHeaders.indexOf('Unit Price');
+  if (srcPrIdx < 0) throw new Error('Export file has no "Purchase Number" column — Odoo export template changed?');
 
   const newRows = [];
   srcData.forEach(srcRow => {
-    const rowKey = `${normStr(srcRow[srcPrIdx])}|${normStr(srcRow[srcProductIdx])}|${normNum(srcRow[srcQtyIdx])}|${normNum(srcRow[srcUnitPriceIdx])}`;
+    const srcPrNum = normStr(srcRow[srcPrIdx]);
+    // A blank PR number can't dedup (blank-PR log rows are excluded from
+    // existingKeys) and would group as "" in validation — where the empty-PR
+    // guard in selectPRRows would then abort the whole --generate batch.
+    if (!srcPrNum) {
+      log(`Skipping row with blank Purchase Number: ${normStr(srcRow[srcProductIdx]) || '(no product)'}`);
+      return;
+    }
+    const rowKey = `${srcPrNum}|${normStr(srcRow[srcProductIdx])}|${normNum(srcRow[srcQtyIdx])}|${normNum(srcRow[srcUnitPriceIdx])}`;
     if (existingKeys.has(rowKey)) {
       log(`Skipping duplicate row: ${rowKey}`);
       return;
