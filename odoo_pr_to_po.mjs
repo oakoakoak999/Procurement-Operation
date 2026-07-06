@@ -628,6 +628,9 @@ async function appendToLog(exportPath) {
   const res     = await sheets.spreadsheets.values.get({
     spreadsheetId: GSHEET_LOG_ID,
     range: GSHEET_LOG_TAB,
+    // Raw values, not display strings: the log's 0.00 format rounds prices to
+    // 2dp, which never matches full-precision export values in the dedup key.
+    valueRenderOption: 'UNFORMATTED_VALUE',
   });
   const dstRows    = res.data.values || [];
   const dstHeaders = dstRows[0] || [];
