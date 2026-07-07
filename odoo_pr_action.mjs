@@ -27,7 +27,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
-import { selectPRRows, executeOdooAction } from './pr-row-actions.mjs';
+import { selectPRRows, executeOdooAction } from './lib/pr-row-actions.mjs';
 import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
 import { loadEnv, log } from './lib/util.mjs';
 import { appendDecision } from './lib/decision-log.mjs';
@@ -90,7 +90,7 @@ const TEST_MODE     = process.argv.includes('--test');
 // Generate PR to PO, remove filter, group by buyer, expand buyer group)
 // live in ./lib/odoo-nav.mjs — shared with odoo_pr_to_po.mjs.
 // STEP 9 (find & select target PR row(s)) and STEP 10 (execute the action)
-// live in ./pr-row-actions.mjs — shared with odoo_pr_to_po.mjs's --generate
+// live in ./lib/pr-row-actions.mjs — shared with odoo_pr_to_po.mjs's --generate
 // path so there's exactly one copy of the code that clicks an irreversible
 // Odoo action.
 

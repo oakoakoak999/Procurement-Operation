@@ -27,7 +27,7 @@ import XLSX from 'xlsx';
 import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
-import { selectPRRows, executeOdooAction, resetSelection } from './pr-row-actions.mjs';
+import { selectPRRows, executeOdooAction, resetSelection } from './lib/pr-row-actions.mjs';
 import { ODOO_URL, REF_SHEET, BU_ODOO_PREFIX, BU_LOG_SHEETS } from './lib/config.mjs';
 import { loadEnv, log, makeRunId } from './lib/util.mjs';
 import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';

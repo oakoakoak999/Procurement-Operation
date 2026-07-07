@@ -42,14 +42,15 @@ Claude Code\
 ├── po-daily-pipeline.mjs    ← the PO Daily job (main script)
 ├── odoo_pr_action.mjs       ← approve or cancel leftover PRs one by one
 ├── promote_vendor_tier2.mjs ← add a vendor to the "2nd tier" list in the reference sheet
-├── pr-row-actions.mjs       ← the careful code that selects PR rows and clicks
-│                              "Generate to PO" — shared by the scripts above
 │
 ├── lib\                     ← shared building blocks (used by the scripts above)
 │   ├── config.mjs           ← reads config.json and checks it is complete
 │   ├── util.mjs             ← small helpers: logging, run IDs, reading .env
 │   ├── odoo-nav.mjs         ← how to log in and move around Odoo
-│   └── sheets-client.mjs    ← how to connect to Google Sheets
+│   ├── sheets-client.mjs    ← how to connect to Google Sheets
+│   ├── decision-log.mjs     ← writes every approve/reject/promote to the Decision Log
+│   └── pr-row-actions.mjs   ← the careful code that selects PR rows and clicks
+│                              "Generate to PO" — shared by the scripts above
 │
 ├── config.json              ← YOUR data: BU lists, sheet IDs, folder IDs
 │                              (stays on this computer only — never uploaded)
