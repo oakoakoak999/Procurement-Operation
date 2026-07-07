@@ -30,6 +30,7 @@ import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction } from './pr-row-actions.mjs';
 import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
 import { loadEnv, log } from './lib/util.mjs';
+import { appendDecision } from './lib/decision-log.mjs';
 import {
   connectAndNavigate, selectDatabase, login, switchBU,
   navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
@@ -118,6 +119,16 @@ const TEST_MODE     = process.argv.includes('--test');
     matched = await selectPRRows(conn.page, PR_NUMBERS, TARGET_BUYER, log);
     const executed = await executeOdooAction(conn.page, ACTION, { testMode: TEST_MODE, log });
     result = executed ? 'EXECUTED' : 'DRY-RUN';
+    // Audit trail — real executions only. The Odoo action already happened,
+    // so a failed append must warn, never fail the run.
+    if (executed) {
+      try {
+        for (const pr of PR_NUMBERS)
+          appendDecision({ event: ACTION.toUpperCase(), profile: PROFILE_KEY, bu: TARGET_BU_CODE, detail: pr });
+      } catch (e) {
+        console.warn(`⚠ Decision Log append failed: ${e.message}`);
+      }
+    }
   } catch (err) {
     errorMsg = err.message;
     console.error(`\n❌ ${err.message}`);

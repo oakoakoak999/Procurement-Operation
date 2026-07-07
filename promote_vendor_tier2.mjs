@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { REF_SHEET } from './lib/config.mjs';
 import { loadEnv } from './lib/util.mjs';
+import { appendDecision } from './lib/decision-log.mjs';
 import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -96,6 +97,13 @@ function colToA1(idx) {
   });
 
   console.log(`[PROMOTED] ${BU_CODE} | ${ITEM_CODE} — added "${newEntry}" to 2nd tier Vendor`);
+  // Audit trail — the sheet write already happened, so a failed append must
+  // warn, never fail the run.
+  try {
+    appendDecision({ event: 'TIER2-PROMOTE', bu: BU_CODE, detail: `${ITEM_CODE} += ${newEntry}` });
+  } catch (e) {
+    console.warn(`⚠ Decision Log append failed: ${e.message}`);
+  }
 })().catch(err => {
   console.error(`❌ ${err.message}`);
   process.exit(1);
