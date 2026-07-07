@@ -1,6 +1,6 @@
 # Procurement Operation
 
-Automation that handles the daily procurement paperwork for all 19 business units (BUs), so a human doesn't have to click through Odoo SmartERP by hand.
+Automation that handles the daily procurement paperwork for all 18 business units (BUs), so a human doesn't have to click through Odoo SmartERP by hand.
 
 It does two main jobs:
 
@@ -89,10 +89,17 @@ The normal way is through the Claude agent ("run PR2PO", "run PO daily"). Undern
 
 | Command | What it runs |
 |---|---|
-| `npm run pr2po` | PR2PO pipeline |
+| `npm run pr2po` | PR2PO pipeline (one BU) |
+| `node run-batch.mjs medicine --generate --headless` | PR2PO for **every** BU, 4 at a time |
 | `npm run po-daily` | PO Daily pipeline |
 | `npm run pr-action` | approve/cancel a leftover PR |
 | `npm run promote-tier2` | add a vendor to the 2nd-tier list |
+
+A batch run leaves its full report in `runs\<batch-id>\` — one log per BU plus
+`summary.md`, a table showing per BU: pass/fail, how many PR rows passed or were
+rejected, and which POs were generated. Add `--test` to rehearse a batch with no
+real Odoo changes. This one command is what a scheduler (cron) will call when
+runs become automatic.
 
 ## Safety rules built into the code
 
@@ -105,5 +112,10 @@ The normal way is through the Claude agent ("run PR2PO", "run PO daily"). Undern
 - **Per-BU log sheets** (Google Sheets) — one per BU, every PR2PO run appends here.
 - **Reference sheet** (Google Sheets) — the vendor + minimum-order rulebook the checks run against.
 - **Drive folders** — one per BU, where PO Daily uploads the split PDFs.
+- **Decision Log** (`agents\procurement-operator\memory\Decision Log.md`) — every human
+  approve/reject/promote, stamped with date, time, PC name and user. Pushed to GitHub
+  automatically after each real decision, so both computers see the same history.
+- **Batch reports** (`runs\` folder) — one folder per batch run with per-BU logs and a
+  summary table. Kept on this computer only (not in GitHub).
 
 The IDs for all of these are in `config.json`.
