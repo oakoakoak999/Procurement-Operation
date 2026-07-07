@@ -39,6 +39,8 @@ That last click is the one action that **cannot be undone**. The code treats it 
 Claude Code\
 │
 ├── odoo_pr_to_po.mjs        ← the PR2PO job (main script)
+├── run-batch.mjs            ← runs the PR2PO job for every BU, a few at a time,
+│                              and writes one summary report per batch
 ├── po-daily-pipeline.mjs    ← the PO Daily job (main script)
 ├── odoo_pr_action.mjs       ← approve or cancel leftover PRs one by one
 ├── promote_vendor_tier2.mjs ← add a vendor to the "2nd tier" list in the reference sheet
@@ -49,6 +51,7 @@ Claude Code\
 │   ├── odoo-nav.mjs         ← how to log in and move around Odoo
 │   ├── sheets-client.mjs    ← how to connect to Google Sheets
 │   ├── decision-log.mjs     ← writes every approve/reject/promote to the Decision Log
+│   ├── memory-sync.mjs      ← pushes the Decision Log to GitHub so both PCs stay in sync
 │   └── pr-row-actions.mjs   ← the careful code that selects PR rows and clicks
 │                              "Generate to PO" — shared by the scripts above
 │

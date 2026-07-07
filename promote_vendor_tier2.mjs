@@ -21,6 +21,7 @@ import { join, dirname } from 'path';
 import { REF_SHEET } from './lib/config.mjs';
 import { loadEnv } from './lib/util.mjs';
 import { appendDecision } from './lib/decision-log.mjs';
+import { syncMemoryFolder } from './lib/memory-sync.mjs';
 import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +105,7 @@ function colToA1(idx) {
   } catch (e) {
     console.warn(`⚠ Decision Log append failed: ${e.message}`);
   }
+  syncMemoryFolder(`Decision Log: tier2-promote ${ITEM_CODE} in ${BU_CODE}`);
 })().catch(err => {
   console.error(`❌ ${err.message}`);
   process.exit(1);

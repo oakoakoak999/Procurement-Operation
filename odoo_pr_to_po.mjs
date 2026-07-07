@@ -822,6 +822,19 @@ async function checkpointD(exportPaths, runStats) {
     // leave the exported procurement data sitting in Downloads (ENOENT-safe
     // no-op when cleanup already ran).
     if (exportPaths) cleanup(exportPaths);
+    // Machine-readable result for run-batch.mjs — the batch summary reads this
+    // instead of regex-matching console text.
+    if (process.env.PR2PO_RESULT_FILE) {
+      try {
+        writeFileSync(process.env.PR2PO_RESULT_FILE, JSON.stringify({
+          ...runStats,
+          bu: CONFIG.bu, profile: CONFIG.profileKey, testMode: TEST_MODE,
+          generateMatched: runStats.generateMatched.map(m => m.prNumber),
+        }, null, 2));
+      } catch (e) {
+        console.warn(`⚠ Result file write failed: ${e.message}`);
+      }
+    }
     await Promise.all([
       conn?.browser ? conn.browser.close().catch(() => {}) : Promise.resolve(),
       writeExecuteLog(runStats),

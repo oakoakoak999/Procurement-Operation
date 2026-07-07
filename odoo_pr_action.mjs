@@ -31,6 +31,7 @@ import { selectPRRows, executeOdooAction } from './lib/pr-row-actions.mjs';
 import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
 import { loadEnv, log } from './lib/util.mjs';
 import { appendDecision } from './lib/decision-log.mjs';
+import { syncMemoryFolder } from './lib/memory-sync.mjs';
 import {
   connectAndNavigate, selectDatabase, login, switchBU,
   navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
@@ -128,6 +129,7 @@ const TEST_MODE     = process.argv.includes('--test');
       } catch (e) {
         console.warn(`⚠ Decision Log append failed: ${e.message}`);
       }
+      syncMemoryFolder(`Decision Log: ${ACTION} ${PR_NUMBERS.length} PR(s) in ${TARGET_BU_CODE}`);
     }
   } catch (err) {
     errorMsg = err.message;
