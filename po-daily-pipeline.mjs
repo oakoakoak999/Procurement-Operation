@@ -36,7 +36,7 @@ import { fileURLToPath } from 'url';
 import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
-import { ODOO_URL, BU_ORDER_FOLDERS } from './lib/config.mjs';
+import { ODOO_URL, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
 import { loadEnv, log, makeRunId } from './lib/util.mjs';
 
 const require = createRequire(import.meta.url);
@@ -53,27 +53,6 @@ const SKIP_SPLIT     = process.argv.includes('--skip-split');
 const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
-const BU_ODOO_PREFIX = {
-  PPNP:  '[PPNP:00051]',
-  PSV:   '[PSV:00052]',
-  PPCH:  '[PPCH:00053]',
-  PUTD:  '[PUTD:00055]',
-  PSUV:  '[PSUV:00057]',
-  PUTH:  '[PUTH:00058]',
-  PLPN1: '[PLPN:00059]',
-  PSSK:  '[PSSK:00061]',
-  PCPN:  '[PCPN:00062]',
-  PUBN:  '[PUBN:00064]',
-  KBKJ:  '[KBKJ:00065]',
-  PSNK:  '[PSNK:00067]',
-  PPRP:  '[PPRP:00068]',
-  PMDH:  '[PMDH:00069]',
-  PLPN2: '[PLPN:00071]',
-  PKPP:  '[PKPP:00072]',
-  PKAN:  '[PKAN:00073]',
-  PKRT:  '[PKRT:00074]',
-  PPAT:  '[PPAT:00075]',
-};
 
 const TOKEN_FILE     = join(__dir, '.gdrive-po-token.json');
 const REDIRECT       = 'http://localhost:3000/callback';
