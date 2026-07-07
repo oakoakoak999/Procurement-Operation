@@ -16,21 +16,15 @@
  * is a bigger decision than promoting a vendor on an existing one).
  */
 
-import { readFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
+import { REF_SHEET } from './lib/config.mjs';
+import { loadEnv } from './lib/util.mjs';
+import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const envPath = join(__dir, '.env');
-if (existsSync(envPath)) {
-  readFileSync(envPath, 'utf8').split('\n').forEach(line => {
-    const [k, ...v] = line.split('=');
-    if (k && v.length) process.env[k.trim()] = v.join('=').trim();
-  });
-}
+loadEnv(join(__dir, '.env'));
 
-const GSHEET_REF_ID      = '1HaJt0f0qVnY2vFs193ZVXdI5xhenKMTYkr-TZcj3Rzo';
-const GSHEET_REF_GID     = 139595673;
 const GSHEETS_TOKEN_FILE = join(__dir, '.gsheets-token.json');
 
 const [BU_CODE, ITEM_CODE, VENDOR_CODE, ...nameParts] = process.argv.slice(2);
@@ -42,16 +36,12 @@ if (!BU_CODE || !ITEM_CODE || !VENDOR_CODE || !VENDOR_NAME) throw new Error(USAG
 if (VENDOR_CODE.includes('|') || VENDOR_NAME.includes('|'))
   throw new Error('VENDOR_CODE / VENDOR_NAME must not contain "|" (reserved as the 2nd tier Vendor separator)');
 
-async function getSheetClient() {
-  const { google } = await import('googleapis');
-  const { GDRIVE_CLIENT_ID: clientId, GDRIVE_CLIENT_SECRET: clientSecret } = process.env;
-  if (!clientId || !clientSecret) throw new Error('GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET not set in .env');
-  if (!existsSync(GSHEETS_TOKEN_FILE)) throw new Error('.gsheets-token.json not found — run odoo_pr_to_po.mjs once to authorize');
-
-  const auth = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000/callback');
-  auth.setCredentials(JSON.parse(readFileSync(GSHEETS_TOKEN_FILE, 'utf8')));
-  return google.sheets({ version: 'v4', auth });
-}
+// Never interactive here — this tool assumes odoo_pr_to_po.mjs already
+// authorized once and saved the token.
+const getSheetClient = () => getSheetClientBase({
+  tokenFile: GSHEETS_TOKEN_FILE,
+  missingTokenMsg: '.gsheets-token.json not found — run odoo_pr_to_po.mjs once to authorize',
+});
 
 // 0-indexed column → A1 letter(s). Single fromCharCode breaks past Z (idx 25);
 // this stays correct if the read range ever widens beyond column Z.
@@ -61,28 +51,16 @@ function colToA1(idx) {
   return s;
 }
 
-// Same "|"-separated "<code> <name>" format as odoo_pr_to_po.mjs's parseTier2Vendors.
-function parseTier2Vendors(raw) {
-  return (raw || '')
-    .split('|')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(entry => {
-      const m = entry.match(/^(\d+)\s+(.*)$/);
-      return m ? { code: m[1], name: m[2].trim() } : { code: '', name: entry };
-    });
-}
-
 (async () => {
   const sheets = await getSheetClient();
 
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: GSHEET_REF_ID });
-  const tab = meta.data.sheets.find(s => s.properties.sheetId === GSHEET_REF_GID);
-  if (!tab) throw new Error(`Tab with gid ${GSHEET_REF_GID} not found in reference sheet`);
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: REF_SHEET.id });
+  const tab = meta.data.sheets.find(s => String(s.properties.sheetId) === String(REF_SHEET.gid));
+  if (!tab) throw new Error(`Tab with gid ${REF_SHEET.gid} not found in reference sheet`);
   const tabName = tab.properties.title;
 
   const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: GSHEET_REF_ID,
+    spreadsheetId: REF_SHEET.id,
     range: `'${tabName}'!A:P`,
   });
   const rows    = res.data.values || [];
@@ -111,7 +89,7 @@ function parseTier2Vendors(raw) {
   const colLetter  = colToA1(tier2Idx);
 
   await sheets.spreadsheets.values.update({
-    spreadsheetId: GSHEET_REF_ID,
+    spreadsheetId: REF_SHEET.id,
     range: `'${tabName}'!${colLetter}${sheetRow}`,
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[newValue]] },

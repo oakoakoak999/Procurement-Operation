@@ -36,6 +36,8 @@ import { fileURLToPath } from 'url';
 import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
+import { ODOO_URL, BU_ORDER_FOLDERS } from './lib/config.mjs';
+import { loadEnv, log, makeRunId } from './lib/util.mjs';
 
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -43,22 +45,14 @@ const pdfParse = require('pdf-parse');
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-const envPath = join(__dir, '.env');
-if (existsSync(envPath)) {
-  readFileSync(envPath, 'utf8').split('\n').forEach(line => {
-    const [k, ...v] = line.split('=');
-    if (k?.trim() && v.length) process.env[k.trim()] = v.join('=').trim();
-  });
-}
+loadEnv(join(__dir, '.env'));
 
 const HEADLESS       = process.argv.includes('--headless');
 const SKIP_PRINT     = process.argv.includes('--skip-print');
 const SKIP_SPLIT     = process.argv.includes('--skip-split');
-const ODOO_URL       = 'https://smarterp-uat.princhealth.com';
 const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
-const SPLIT_DIR      = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split`);
 const BU_ODOO_PREFIX = {
   PPNP:  '[PPNP:00051]',
   PSV:   '[PSV:00052]',
@@ -81,28 +75,6 @@ const BU_ODOO_PREFIX = {
   PPAT:  '[PPAT:00075]',
 };
 
-// Order folder per BU — script auto-creates year subfolders (2026, 2027, …) inside
-const BU_ORDER_FOLDERS = {
-  PPNP:  '1W-37wU86npJ1d_LqPqEkmGJ44pN8lAri',
-  PSV:   '1_DbjEAFbTEdhgrHHBxSt2Vpo6JlRijqg',
-  PPCH:  '1BF3AfhqTjnmZMaQQqnsJFI6eWqSO6WAN',
-  PUTD:  '1s7dlLN2mAm3UXH7kd3uarDZ1xQGOMNLI',
-  PSUV:  '1WTCbRRujdsmfM1zgNwPrqq1pNP2AP07x',
-  PUTH:  '1RQegINolIpTbz4gUub5FMhWx_jebwz7d',
-  PLPN1: '1GMHgOcugpaRIP-Mxbrt4ul3TJh0RK18c',
-  PSSK:  '1ATUk47tJfBshiiAojiGbCzUkXXuXFqpP',
-  PCPN:  '1rE90pC60SlxtW14OVAF5YP8Lb06P5LnW',
-  PUBN:  '1u-ns10wBKnJQ84N3bCv4g3M0-ygJhM86',
-  KBKJ:  '1Z155u0ZYn64RX75--Rbd5KjByfg-Yt98',
-  PSNK:  '1SqA9E92DehID22_XL7Mcyao71H9_7J8j',
-  PPRP:  '1BNxZdyAA8Dv1VsyKgGf6qYFAJA5_AXI4',
-  PMDH:  '1vMIApeSo0HiomBv-Z2cvRNBsy74KqYJH',
-  PLPN2: '1AWjihoFeMrDVcWKBuBGEYwjE1q0aoR8h',
-  PKPP:  '1ntq7NiaK1BCpVfU1o34H2hRZy2NezoAS',
-  PKAN:  '12T7CG3FFGL9KAcmOogeanUyI2Q6h214v',
-  PKRT:  '1tAqRMt3nAIumr_OmAhz-sqa8S71rHaQ7',
-  PPAT:  '12HeutjydP2uUVIpfM1GcvImWfr7-6-gW',
-};
 const TOKEN_FILE     = join(__dir, '.gdrive-po-token.json');
 const REDIRECT       = 'http://localhost:3000/callback';
 
@@ -110,9 +82,16 @@ const _dateIdx     = process.argv.indexOf('--date');
 const _d           = _dateIdx !== -1 ? new Date(process.argv[_dateIdx + 1]) : new Date();
 if (isNaN(_d.getTime()))
   throw new Error(`Invalid --date "${process.argv[_dateIdx + 1]}" — expected e.g. 2026-05-26`);
-const TARGET_DATE  = `${_d.getDate()} ${_d.toLocaleString('en-GB', { month: 'short' })} ${_d.getFullYear()}`;
-const TARGET_MONTH = `${_d.toLocaleString('en-GB', { month: 'long' })} ${_d.getFullYear()}`;
-const DATE_SLUG    = TARGET_DATE.replace(/ /g, '-');
+const _day  = _d.getDate();
+const _mon  = _d.toLocaleString('en-GB', { month: 'short' });
+const _year = _d.getFullYear();
+const _p2   = v => String(v).padStart(2, '0');
+const TARGET_DATE  = `${_day} ${_mon} ${_year}`; // display/logging only
+// Word-boundary match ("7 Jul 2026" must NOT match "17 Jul 2026"); tolerates zero-padded day
+const TARGET_DATE_RE = new RegExp(`(?<!\\d)0?${_day} ${_mon} ${_year}`);
+const TARGET_MONTH = `${_d.toLocaleString('en-GB', { month: 'long' })} ${_year}`;
+const DATE_SLUG    = `${_year}${_p2(_d.getMonth() + 1)}${_p2(_day)}`;
+const SPLIT_DIR    = join(DOWNLOADS_DIR, `PO-${TARGET_BU_CODE}-Split-${DATE_SLUG}`);
 
 const _folderIdx      = process.argv.indexOf('--upload-folder');
 const ORDER_FOLDER    = _folderIdx !== -1
@@ -122,20 +101,13 @@ const ORDER_FOLDER    = _folderIdx !== -1
 const USERNAME = process.env.ODOO_USERNAME;
 const PASSWORD = process.env.ODOO_PASSWORD;
 
-function log(stage, msg) {
-  console.log(`[${new Date().toLocaleTimeString()}] [${stage}] ${msg}`);
-}
-
 const WARNINGS = [];
 function logWarning(stage, msg) {
   WARNINGS.push(`[${stage}] ${msg}`);
   log(stage, `WARNING: ${msg}`);
 }
 
-const RUN_ID = (() => {
-  const n = new Date(), p = v => String(v).padStart(2, '0');
-  return `${n.getFullYear()}${p(n.getMonth()+1)}${p(n.getDate())}-${p(n.getHours())}${p(n.getMinutes())}`;
-})();
+const RUN_ID = makeRunId();
 
 const PRINT_MAX_RETRIES   = 3;
 const PRINT_RETRY_BACKOFF = 3000;
@@ -271,7 +243,7 @@ async function stagePrint() {
     await page.waitForTimeout(1000);
 
     // Guard: check if today's date sub-group exists within the month
-    const dayHeader = page.locator('.o_group_header').filter({ hasText: TARGET_DATE }).first();
+    const dayHeader = page.locator('.o_group_header').filter({ hasText: TARGET_DATE_RE }).first();
     try {
       await dayHeader.waitFor({ timeout: 5000 });
     } catch {
@@ -311,18 +283,19 @@ async function stagePrint() {
       savedFiles.push(outPath);
       log('PRINT', `Saved → ${filename}`);
 
-      const dayHeader = page.locator('.o_group_header').filter({ hasText: TARGET_DATE }).first();
+      const dayHeader = page.locator('.o_group_header').filter({ hasText: TARGET_DATE_RE }).first();
       const pagerText = (await dayHeader.locator('.o_pager_counter').textContent().catch(() => '')).trim();
       const match = pagerText.match(/(\d+)-(\d+)\s*\/\s*(\d+)/);
       if (!match || parseInt(match[2]) >= parseInt(match[3])) break;
 
       await dayHeader.locator('.o_pager_next').click();
       await page.waitForFunction(
-        ({ hdr, prev }) => {
-          const h = Array.from(document.querySelectorAll('.o_group_header')).find(el => el.textContent.includes(hdr));
+        ({ hdrReSrc, prev }) => {
+          const hdrRe = new RegExp(hdrReSrc);
+          const h = Array.from(document.querySelectorAll('.o_group_header')).find(el => hdrRe.test(el.textContent));
           return h?.querySelector('.o_pager_counter')?.textContent?.trim() !== prev;
         },
-        { hdr: TARGET_DATE, prev: pagerText },
+        { hdrReSrc: TARGET_DATE_RE.source, prev: pagerText },
         { timeout: 10000 }
       );
       await page.waitForTimeout(3000);

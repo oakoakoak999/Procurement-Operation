@@ -3,6 +3,7 @@
 .gdrive-token.json
 .gdrive-po-token.json
 .gsheets-token.json
+config.json
 
 # Chrome debug profile (session-specific, not portable)
 .chrome-debug-profile/

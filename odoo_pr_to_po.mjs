@@ -23,27 +23,24 @@
  * not "meets the stated procurement policy."
  */
 
-import { chromium } from 'playwright';
 import XLSX from 'xlsx';
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
-import { execSync } from 'child_process';
+import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction, resetSelection } from './pr-row-actions.mjs';
+import { ODOO_URL, REF_SHEET, BU_ODOO_PREFIX, BU_LOG_SHEETS } from './lib/config.mjs';
+import { loadEnv, log, makeRunId } from './lib/util.mjs';
+import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';
+import {
+  connectAndNavigate, selectDatabase, login, switchBU,
+  navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
+} from './lib/odoo-nav.mjs';
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────
 const __dir = dirname(fileURLToPath(import.meta.url));
-const envPath = join(__dir, '.env');
-if (existsSync(envPath)) {
-  readFileSync(envPath, 'utf8').split('\n').forEach(line => {
-    const [k, ...v] = line.split('=');
-    if (k && v.length) process.env[k.trim()] = v.join('=').trim();
-  });
-}
+loadEnv(join(__dir, '.env'));
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const ODOO_URL        = 'https://smarterp-uat.princhealth.com';
-const DB_SELECTOR_URL = `${ODOO_URL}/web/database/selector`;
 const USERNAME        = process.env.ODOO_USERNAME;
 const PASSWORD        = process.env.ODOO_PASSWORD;
 if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not set in .env');
@@ -57,54 +54,10 @@ const TARGET_BU_CODE = _pos[1];
 if (!PROFILE_KEY || !TARGET_BU_CODE)
   throw new Error('Usage: node odoo_pr_to_po.mjs <profile> <BU_CODE> [--headless] [--generate [--test]]\nProfiles: supply | medicine');
 
-const BU_ODOO_PREFIX = {
-  PPNP:  '[PPNP:00051]',
-  PSV:   '[PSV:00052]',
-  PPCH:  '[PPCH:00053]',
-  PUTD:  '[PUTD:00055]',
-  PSUV:  '[PSUV:00057]',
-  PUTH:  '[PUTH:00058]',
-  PLPN1: '[PLPN:00059]',
-  PSSK:  '[PSSK:00061]',
-  PCPN:  '[PCPN:00062]',
-  PUBN:  '[PUBN:00064]',
-  KBKJ:  '[KBKJ:00065]',
-  PSNK:  '[PSNK:00067]',
-  PPRP:  '[PPRP:00068]',
-  PMDH:  '[PMDH:00069]',
-  PLPN2: '[PLPN:00071]',
-  PKPP:  '[PKPP:00072]',
-  PKAN:  '[PKAN:00073]',
-  PKRT:  '[PKRT:00074]',
-  PPAT:  '[PPAT:00075]',
-};
 // Inverse map: '[PLPN:00059]' → 'PLPN1' — distinguishes BUs sharing the same letters
 const PREFIX_TO_BU = Object.fromEntries(
   Object.entries(BU_ODOO_PREFIX).map(([code, prefix]) => [prefix, code])
 );
-// Each BU's own "<BUCODE> Log PR-PO 2026" sheet, living in its Drive folder
-// under the shared PR2PO drive (replaces the single shared GSHEET_LOG_ID).
-const BU_LOG_SHEETS = {
-  PPNP:  '1QKgY5fh4aaGGrTzRJlO6z7nvu6IjzrGpOqo9UMsaLQs',
-  PSV:   '1eiuzPvsS9li3H-81q_8A1l1BwJGenbxJGh0NHO_7Fzw',
-  PPCH:  '1zfcWM58Hw_lOg3xQr983tSi9CJrohpNSjwX_DRwtpkY',
-  PUTD:  '18zlyVh1afnfhXMBRqlY52ELU6Pmp2M_2H-2iSK9SXHI',
-  PSUV:  '1YW_MHogZpf9w4t0MGMiBNwPVO9L0TikLB1ME0PTZh18',
-  PUTH:  '15yozB4bUZqEGkKuXKp3t32wOlTjk-3VfkyeNbeEZcrs',
-  PLPN1: '1r8_v5OQtLlQvjilNJ_UqNvX8vuj-4ooNwHHTZQi4b8c',
-  PSSK:  '18EpoJD9QyEeT3NF9Nwk0cn6xyRnXDudVXsO-HAcLUho',
-  PCPN:  '1IMeoKPRZCiFhxRmk-udDxrv6N8nbEnf0C1MaqHJr1rI',
-  PUBN:  '102o5OA4ycqDz0cRNNMHKhu1LtKUqYT_8LiLR8-VwXAY',
-  KBKJ:  '1gwadwrNxXDqhr53gJW7FWqZKtLVph2suLyuK5QRayus',
-  PSNK:  '1lteakhBG02GdgdYeL4LjJKql6uU_o9zgSfwouWzS7YU',
-  PPRP:  '1jW922u_KbWO_Fl57rxYgLE-PVek3Ytf7gFBbhBSoem4',
-  PMDH:  '1C_6Jf-QU96ChRf9zETSaYTcAN8lH5ZjygIZ6gI6YlMY',
-  PLPN2: '1MmHYw7Sib7BvpsYzFAIZvmSlGYtWkgqyLiMpyTN1mdQ',
-  PKPP:  '10iXenl1dSWyXgY6fD5-O3x7FzzXXrgV_vA6O3mxvbh8',
-  PKAN:  '1gDW547a8oKngt3Hb8S1LOzyDSwqqfGltDqaIoJIOQK4',
-  PKRT:  '1jVh_oUN9HhVY6Wz-D7lByjG6l2CZza1sbRrSWH3fE9s',
-  PPAT:  '1b_6kM520q7tfWJXS5EaH5sIn4YfzBSWh8F_X1U6UeVI',
-};
 const _prof = PROFILES[PROFILE_KEY];
 if (!_prof) {
   const swapped = BU_ODOO_PREFIX[PROFILE_KEY] && PROFILES[TARGET_BU_CODE];
@@ -119,8 +72,6 @@ const HEADLESS       = process.argv.includes('--headless');
 const GENERATE       = process.argv.includes('--generate');
 const TEST_MODE      = process.argv.includes('--test');
 const DOWNLOAD_PATH   = `${process.env.USERPROFILE}\\Downloads`;
-const GSHEET_REF_ID  = '1HaJt0f0qVnY2vFs193ZVXdI5xhenKMTYkr-TZcj3Rzo'; // vendor + min order reference
-const GSHEET_REF_GID = '139595673'; // tab: data_view
 const GSHEET_LOG_ID  = BU_LOG_SHEETS[TARGET_BU_CODE] ?? (() => { throw new Error(`No log sheet configured for BU "${TARGET_BU_CODE}"`); })();
 const GSHEET_LOG_TAB      = _prof.logTab;
 const CONFIG              = { profileKey: PROFILE_KEY, bu: TARGET_BU_CODE, buyer: TARGET_BUYER, logTab: GSHEET_LOG_TAB };
@@ -134,80 +85,37 @@ const COL_NAME_OVERRIDES = {
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
-// "2nd tier Vendor" cell can hold multiple vendors, "|"-separated, each as
-// "<code> <name>" (e.g. "0000000308 บริษัท... - BDF | 0000000918 บริษัท... - 3M").
-// Entries without a leading numeric code are matched as name-only.
-function parseTier2Vendors(raw) {
-  return (raw || '')
-    .split('|')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(entry => {
-      const m = entry.match(/^(\d+)\s+(.*)$/);
-      return m ? { code: m[1], name: m[2].trim() } : { code: '', name: entry };
-    });
-}
+// Fetches the vendor + min-order reference rows via the authenticated Sheets
+// API (replaced the public CSV export, which corrupted rows on quoted fields
+// containing newlines and needed no auth to read procurement data).
+async function fetchRefRows() {
+  const sheets = await getSheetClient();
 
-function parseCSVLine(line) {
-  const cells = [];
-  let cur = '', inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === '"') {
-      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
-      else inQ = !inQ;
-    } else if (c === ',' && !inQ) {
-      cells.push(cur); cur = '';
-    } else {
-      cur += c;
-    }
-  }
-  cells.push(cur);
-  return cells;
-}
+  // Resolve gid → tab title (gid survives a tab rename; a hardcoded title wouldn't)
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: REF_SHEET.id, fields: 'sheets.properties' });
+  const tab  = meta.data.sheets.find(s => String(s.properties.sheetId) === String(REF_SHEET.gid));
+  if (!tab) throw new Error(`Tab with gid ${REF_SHEET.gid} not found in reference sheet`);
 
-async function fetchGSheetCSV() {
-  const { get: httpsGet } = await import('https');
-  const startUrl = `https://docs.google.com/spreadsheets/d/${GSHEET_REF_ID}/export?format=csv&gid=${GSHEET_REF_GID}`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: REF_SHEET.id,
+    range: `'${tab.properties.title}'!A:Z`,
+  });
+  const allRows = res.data.values || [];
+  const headers = (allRows[0] || []).map(h => String(h ?? '').trim());
 
-  function fetchUrl(u, hops = 0) {
-    return new Promise((resolve, reject) => {
-      if (hops > 5) return reject(new Error('Too many redirects fetching GSheet'));
-      const req = httpsGet(u, { timeout: 30000 }, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          resolve(fetchUrl(res.headers.location, hops + 1));
-          return;
-        }
-        if (res.statusCode !== 200) return reject(new Error(`GSheet HTTP ${res.statusCode}`));
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => resolve(data));
-        res.on('error', reject);
-      });
-      req.on('timeout', () => req.destroy(new Error('GSheet fetch timed out after 30s')));
-      req.on('error', reject);
-    });
-  }
-
-  const csv = await fetchUrl(startUrl);
-  const lines = csv.split('\n').filter(l => l.trim());
-  const headers = parseCSVLine(lines[0] || '').map(h => h.trim());
-
-  // A restricted sheet or renamed tab still returns HTTP 200 — but with a
-  // Google login/HTML page instead of CSV. Parsing that yields junk headers,
-  // every refMap lookup misses, and validation silently passes EVERYTHING
-  // (fail-open — --generate would act on it). Verify the response actually
-  // looks like the reference sheet; throwing here lands in validateAndAppend's
-  // existing catch → WARN + unvalidated append + no generation (fail-closed).
+  // A restructured or wrong tab would yield junk headers, every refMap lookup
+  // would miss, and validation would silently pass EVERYTHING (fail-open —
+  // --generate would act on it). Verify the response actually looks like the
+  // reference sheet; throwing here lands in validateAndAppend's existing
+  // catch → WARN + unvalidated append + no generation (fail-closed).
   const required = ['bu', 'order_item_code', 'Vendor Code', 'Vendor Name', 'Minimum Order'];
   const missing  = required.filter(h => !headers.includes(h));
   if (missing.length)
     throw new Error(`Reference sheet response is missing column(s) [${missing.join(', ')}] — sheet access restricted, or headers renamed?`);
 
-  const rows = lines.slice(1).map(line => {
-    const vals = parseCSVLine(line);
+  const rows = allRows.slice(1).map(vals => {
     const obj = {};
-    headers.forEach((h, i) => obj[h] = (vals[i] || '').trim());
+    headers.forEach((h, i) => obj[h] = String(vals[i] ?? '').trim());
     return obj;
   });
   if (rows.length === 0) throw new Error('Reference sheet returned zero data rows — tab cleared?');
@@ -250,51 +158,14 @@ async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skip
   }
 }
 
-async function getSheetClient() {
-  const { google } = await import('googleapis');
-  const { GDRIVE_CLIENT_ID: clientId, GDRIVE_CLIENT_SECRET: clientSecret } = process.env;
-  if (!clientId || !clientSecret)
-    throw new Error('GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET not set in .env');
-
-  const auth = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000/callback');
-
-  if (existsSync(GSHEETS_TOKEN_FILE)) {
-    auth.setCredentials(JSON.parse(readFileSync(GSHEETS_TOKEN_FILE, 'utf8')));
-    return google.sheets({ version: 'v4', auth });
-  }
-
-  // Interactive OAuth needs a human — in headless (cron) mode, fail fast
-  // instead of hanging forever waiting on a localhost callback no one will
-  // ever complete (the hang would also never write a FAILED Execute Log row).
-  if (HEADLESS)
-    throw new Error(`Google Sheets token missing (${GSHEETS_TOKEN_FILE}) — run once without --headless to authorize`);
-
-  // First run only: open browser for OAuth
-  const authUrl = auth.generateAuthUrl({
-    access_type: 'offline',
-    scope: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
-  try { execSync(`start "" "${authUrl}"`, { stdio: 'ignore' }); } catch {}
-  log(`\nOpen this URL to authorize Google Sheets access:\n${authUrl}\n`);
-
-  const { createServer } = await import('http');
-  const code = await new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const u = new URL(req.url, 'http://localhost:3000');
-      const c = u.searchParams.get('code');
-      if (c) { res.end('<h2>Done! You can close this tab.</h2>'); server.close(); resolve(c); }
-      else res.end('Waiting...');
-    }).listen(3000);
-    server.on('error', reject); // e.g. port 3000 already in use — reject instead of crashing uncaught
-    log('Waiting for OAuth callback on http://localhost:3000/callback ...');
-  });
-
-  const { tokens } = await auth.getToken(code);
-  auth.setCredentials(tokens);
-  writeFileSync(GSHEETS_TOKEN_FILE, JSON.stringify(tokens, null, 2), 'utf8');
-  log('Google Sheets token saved → ' + GSHEETS_TOKEN_FILE);
-  return google.sheets({ version: 'v4', auth });
-}
+// Interactive OAuth needs a human — in headless (cron) mode the shared client
+// fails fast instead of hanging forever on a localhost callback no one will
+// ever complete (the hang would also never write a FAILED Execute Log row).
+const getSheetClient = () => getSheetClientBase({
+  tokenFile: GSHEETS_TOKEN_FILE,
+  interactive: !HEADLESS,
+  missingTokenMsg: `Google Sheets token missing (${GSHEETS_TOKEN_FILE}) — run once without --headless to authorize`,
+});
 
 // Sheets API's values.append (insertDataOption: INSERT_ROWS) inherits cell
 // formatting from the row directly above the insertion point. On a fresh
@@ -375,10 +246,6 @@ function today() {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-function log(msg) {
-  console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
-}
-
 // Resolve BU code from a Company cell like "[PLPN:00059] Princ Lampang ..."
 // Falls back to the letters inside brackets if the full prefix isn't in the map.
 function buFromCompany(company) {
@@ -386,159 +253,9 @@ function buFromCompany(company) {
   return (prefix && PREFIX_TO_BU[prefix]) || company.match(/\[([A-Z]+):/)?.[1] || '';
 }
 
-// ─── STEP 1: LAUNCH & CONNECT ────────────────────────────────────────────────
-async function connectAndNavigate() {
-  log('Launching Chrome...');
-  const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
-  try {
-    const context = await browser.newContext();
-    const page    = await context.newPage();
-    return { browser, context, page };
-  } catch (err) {
-    await browser.close().catch(() => {}); // don't leak the Chrome process across retries
-    throw err;
-  }
-}
-
-// ─── STEP 2: SELECT DATABASE ──────────────────────────────────────────────────
-async function selectDatabase(page) {
-  log('Navigating to database selector...');
-  await page.goto(DB_SELECTOR_URL);
-  await page.waitForLoadState('networkidle');
-
-  // Click the most recent princ-smarterp-prod-base-* database
-  await page.click('a[href*="princ-smarterp-prod-base-"]');
-  await page.waitForLoadState('load');
-  log(`Database selected, URL: ${page.url()}`);
-}
-
-// ─── STEP 3: LOGIN ────────────────────────────────────────────────────────────
-async function login(page) {
-  if (!page.url().includes('/login')) {
-    log('Already logged in — skipping login');
-    return;
-  }
-  log('Logging in...');
-  await page.fill('input[name="login"]', USERNAME);
-  await page.fill('input[name="password"]', PASSWORD);
-  await page.click('button[type="submit"]');
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(2000);
-  log('Logged in');
-}
-
-// ─── STEP 4: SWITCH BU ────────────────────────────────────────────────────────
-async function switchBU(page) {
-  log(`Switching BU to ${TARGET_BU_CODE}...`);
-
-  // Wait for navbar to be ready
-  await page.waitForSelector('.o_main_navbar', { timeout: 30000 });
-
-  // Wait up to 5s for company switcher to attach — isVisible() is too strict and
-  // returns false while the element is in DOM but not yet painted
-  let switcherFound = false;
-  try {
-    await page.waitForSelector('.o_switch_company_menu', { timeout: 5000, state: 'attached' });
-    switcherFound = true;
-  } catch {}
-
-  if (!switcherFound) {
-    log('Company switcher not present — single-company mode, proceeding as-is');
-    return;
-  }
-
-  // Open company switcher
-  await page.click('.o_switch_company_menu button');
-  await page.waitForTimeout(1000);
-
-  // Find company with matching code
-  const companies = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('.o_switch_company_menu [data-company-id]')).map(el => ({
-      id: el.getAttribute('data-company-id'),
-      label: el.querySelector('.company_label')?.textContent?.trim() || '',
-    }))
-  );
-
-  const odooPrefix = BU_ODOO_PREFIX[TARGET_BU_CODE];
-  if (!odooPrefix) throw new Error(`Unknown BU "${TARGET_BU_CODE}". Valid: ${Object.keys(BU_ODOO_PREFIX).join(', ')}`);
-  const target = companies.find(c => c.label.startsWith(odooPrefix));
-  if (!target) throw new Error(`BU "${TARGET_BU_CODE}" not found in company list`);
-
-  log(`Found BU: ${target.label}`);
-  await page.click(`[data-company-id="${target.id}"] .log_into`);
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(2000);
-  log(`Switched to ${TARGET_BU_CODE}`);
-}
-
-// ─── STEP 5: NAVIGATE TO GENERATE PR TO PO ───────────────────────────────────
-async function navigateToPRtoPO(page) {
-  log('Waiting for navbar to be ready...');
-  await page.waitForSelector('.o_navbar_apps_menu button', { timeout: 30000 });
-  await page.waitForTimeout(1000);
-  log('Opening 9-dot home menu...');
-  await page.click('.o_navbar_apps_menu button');
-  await page.waitForTimeout(1000);
-
-  log('Clicking Purchase app...');
-  await page.click('a.o_app[href*="menu_id=340"]');
-  await page.waitForTimeout(3000);
-
-  log('Clicking Operations → Generate PR to PO...');
-  await page.locator('.o_menu_sections button').filter({ hasText: 'Operations' }).click();
-  await page.waitForTimeout(800);
-  await page.locator('.dropdown-menu a, .dropdown-item').filter({ hasText: 'Generate PR to PO' }).first().click();
-  await page.waitForTimeout(3000);
-  log('On Generate PR to PO page');
-}
-
-// ─── STEP 6: REMOVE DEFAULT FILTER ───────────────────────────────────────────
-async function removeFilter(page) {
-  await page.waitForTimeout(1500);
-  const facet = page.locator('.o_searchview_facet').filter({ hasText: 'Generate PR to PO' });
-  if (await facet.count() > 0) {
-    log('Removing "Generate PR to PO" filter...');
-    await facet.locator('.o_facet_remove').click();
-    await page.waitForTimeout(1500);
-    log('Filter removed');
-  } else {
-    log('No "Generate PR to PO" filter found — skipping');
-  }
-}
-
-// ─── STEP 7: GROUP BY BUYER ───────────────────────────────────────────────────
-async function groupByBuyer(page) {
-  log('Adding Group By: Buyer...');
-  await page.click('.o_searchview_dropdown_toggler');
-  await page.waitForTimeout(800);
-  await page.selectOption('.o_add_custom_group_menu', 'buyer_id');
-  await page.waitForTimeout(1500);
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(800);
-  log('Grouped by Buyer');
-}
-
-// ─── STEP 8: CLICK SUPPLY_BUYER ───────────────────────────────────────────────
-async function clickSupplyBuyer(page) {
-  log(`Clicking ${TARGET_BUYER} group...`);
-  await page.waitForTimeout(1500);
-
-  if (await page.locator('.o_group_header').count() === 0) {
-    log('No PR groups found — list is empty');
-    return false;
-  }
-
-  const target = page.locator('.o_group_header').filter({ hasText: TARGET_BUYER });
-  if (await target.count() === 0) {
-    log(`${TARGET_BUYER} group not found — no pending PRs`);
-    return false;
-  }
-
-  await target.first().click();
-  await page.waitForTimeout(2000);
-  log(`${TARGET_BUYER} expanded`);
-  return true;
-}
+// STEPS 1–8 (launch browser, select DB, login, switch BU, navigate to
+// Generate PR to PO, remove filter, group by buyer, expand buyer group)
+// live in ./lib/odoo-nav.mjs — shared with odoo_pr_action.mjs.
 
 // ─── STEP 9: EXPORT XLSX ─────────────────────────────────────────────────────
 async function exportXLSX(page) {
@@ -710,7 +427,7 @@ async function validateAndAppend(newRows, headers) {
   log('Fetching vendor & minimum order reference from Google Sheet...');
   let refRows;
   try {
-    refRows = await fetchGSheetCSV();
+    refRows = await fetchRefRows();
   } catch (e) {
     log(`WARNING: Could not fetch reference GSheet (${e.message}) — appending all rows without validation`);
     const sheets = await getSheetClient();
@@ -938,10 +655,7 @@ async function generateApprovedPOs(page, prNumbers) {
 const MAX_RETRIES   = 3;
 const RETRY_BACKOFF = 3000;
 
-const RUN_ID = (() => {
-  const n = new Date(), p = v => String(v).padStart(2, '0');
-  return `${n.getFullYear()}${p(n.getMonth()+1)}${p(n.getDate())}-${p(n.getHours())}${p(n.getMinutes())}`;
-})();
+const RUN_ID = makeRunId();
 
 let currentStep = '?';
 function step(s) { currentStep = s; log(`── ${s}`); }
@@ -975,10 +689,10 @@ async function withRetry(name, fn) {
 
 async function checkpointA() {
   return withRetry('A: browser + DB', async () => {
-    step('1/12 connectAndNavigate'); const conn = await connectAndNavigate();
+    step('1/12 connectAndNavigate'); const conn = await connectAndNavigate({ headless: HEADLESS });
     step('2/12 selectDatabase');
     try {
-      await selectDatabase(conn.page);
+      await selectDatabase(conn.page, ODOO_URL);
     } catch (err) {
       await conn.browser.close().catch(() => {}); // don't leak browsers across retries
       throw err;
@@ -989,8 +703,8 @@ async function checkpointA() {
 
 async function checkpointB(page) {
   return withRetry('B: login + BU', async () => {
-    step('3/12 login');            await login(page);
-    step('4/12 switchBU');         await switchBU(page);
+    step('3/12 login');            await login(page, { username: USERNAME, password: PASSWORD });
+    step('4/12 switchBU');         await switchBU(page, TARGET_BU_CODE, BU_ODOO_PREFIX);
     step('5/12 navigateToPRtoPO'); await navigateToPRtoPO(page);
   });
 }
@@ -1003,10 +717,10 @@ async function checkpointC(page) {
     }
     step('6/12 removeFilter');     await removeFilter(page);
     step('7/12 groupByBuyer');     await groupByBuyer(page);
-    step('8/12 clickSupplyBuyer');
-    const hasData = await clickSupplyBuyer(page);
+    step('8/12 expandBuyerGroup');
+    const hasData = await expandBuyerGroup(page, TARGET_BUYER);
     if (!hasData) {
-      throw new EarlyExit(`No ${CONFIG.buyer} PRs found — nothing to process`, '8/12 clickSupplyBuyer');
+      throw new EarlyExit(`No ${CONFIG.buyer} PRs found — nothing to process`, '8/12 expandBuyerGroup');
     }
     step('9/12 exportXLSX');
     const exportPaths = await exportXLSX(page);

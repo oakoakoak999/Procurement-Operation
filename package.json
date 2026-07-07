@@ -1,14 +1,15 @@
 {
-  "name": "obsidian-vault",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "procurement-operation",
+  "version": "2.0.0",
+  "description": "All-BU procurement pipelines: PR-to-PO conversion and PO daily print/split/upload against Odoo SmartERP",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "pr2po": "node odoo_pr_to_po.mjs",
+    "po-daily": "node po-daily-pipeline.mjs",
+    "pr-action": "node odoo_pr_action.mjs",
+    "promote-tier2": "node promote_vendor_tier2.mjs"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
+  "private": true,
   "type": "commonjs",
   "dependencies": {
     "googleapis": "^144.0.0",

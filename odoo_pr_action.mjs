@@ -24,25 +24,22 @@
  * checked — if any one is missing, the whole run aborts with none acted on.
  */
 
-import { chromium } from 'playwright';
 import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction } from './pr-row-actions.mjs';
+import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
+import { loadEnv, log } from './lib/util.mjs';
+import {
+  connectAndNavigate, selectDatabase, login, switchBU,
+  navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
+} from './lib/odoo-nav.mjs';
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────
 const __dir = dirname(fileURLToPath(import.meta.url));
-const envPath = join(__dir, '.env');
-if (existsSync(envPath)) {
-  readFileSync(envPath, 'utf8').split('\n').forEach(line => {
-    const [k, ...v] = line.split('=');
-    if (k && v.length) process.env[k.trim()] = v.join('=').trim();
-  });
-}
+loadEnv(join(__dir, '.env'));
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const ODOO_URL        = 'https://smarterp-uat.princhealth.com';
-const DB_SELECTOR_URL = `${ODOO_URL}/web/database/selector`;
 const USERNAME        = process.env.ODOO_USERNAME;
 const PASSWORD        = process.env.ODOO_PASSWORD;
 if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not set in .env');
@@ -50,28 +47,6 @@ if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not s
 const PROFILES = {
   supply:   { buyer: 'SUPPLY_BUYER' },
   medicine: { buyer: 'MEDICINE_BUYER' },
-};
-
-const BU_ODOO_PREFIX = {
-  PPNP:  '[PPNP:00051]',
-  PSV:   '[PSV:00052]',
-  PPCH:  '[PPCH:00053]',
-  PUTD:  '[PUTD:00055]',
-  PSUV:  '[PSUV:00057]',
-  PUTH:  '[PUTH:00058]',
-  PLPN1: '[PLPN:00059]',
-  PSSK:  '[PSSK:00061]',
-  PCPN:  '[PCPN:00062]',
-  PUBN:  '[PUBN:00064]',
-  KBKJ:  '[KBKJ:00065]',
-  PSNK:  '[PSNK:00067]',
-  PPRP:  '[PPRP:00068]',
-  PMDH:  '[PMDH:00069]',
-  PLPN2: '[PLPN:00071]',
-  PKPP:  '[PKPP:00072]',
-  PKAN:  '[PKAN:00073]',
-  PKRT:  '[PKRT:00074]',
-  PPAT:  '[PPAT:00075]',
 };
 
 const USAGE = 'Usage: node odoo_pr_action.mjs <profile> <BU_CODE> <PR_NUMBER[,PR_NUMBER...]> <approve|reject> [--test] [--headless]\n' +
@@ -110,152 +85,9 @@ const TARGET_BUYER = _prof.buyer;
 const HEADLESS      = process.argv.includes('--headless');
 const TEST_MODE     = process.argv.includes('--test');
 
-function log(msg) {
-  console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
-}
-
-// ─── STEP 1: LAUNCH & CONNECT ────────────────────────────────────────────────
-async function connectAndNavigate() {
-  log('Launching Chrome...');
-  const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
-  try {
-    const context = await browser.newContext();
-    const page    = await context.newPage();
-    return { browser, context, page };
-  } catch (err) {
-    await browser.close().catch(() => {}); // main never gets the handle if this throws — close here or leak Chrome
-    throw err;
-  }
-}
-
-// ─── STEP 2: SELECT DATABASE ──────────────────────────────────────────────────
-async function selectDatabase(page) {
-  log('Navigating to database selector...');
-  await page.goto(DB_SELECTOR_URL);
-  await page.waitForLoadState('networkidle');
-  await page.click('a[href*="princ-smarterp-prod-base-"]');
-  await page.waitForLoadState('load');
-  log(`Database selected, URL: ${page.url()}`);
-}
-
-// ─── STEP 3: LOGIN ────────────────────────────────────────────────────────────
-async function login(page) {
-  if (!page.url().includes('/login')) {
-    log('Already logged in — skipping login');
-    return;
-  }
-  log('Logging in...');
-  await page.fill('input[name="login"]', USERNAME);
-  await page.fill('input[name="password"]', PASSWORD);
-  await page.click('button[type="submit"]');
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(2000);
-  log('Logged in');
-}
-
-// ─── STEP 4: SWITCH BU ────────────────────────────────────────────────────────
-async function switchBU(page) {
-  log(`Switching BU to ${TARGET_BU_CODE}...`);
-  await page.waitForSelector('.o_main_navbar', { timeout: 30000 });
-
-  let switcherFound = false;
-  try {
-    await page.waitForSelector('.o_switch_company_menu', { timeout: 5000, state: 'attached' });
-    switcherFound = true;
-  } catch {}
-
-  if (!switcherFound) {
-    log('Company switcher not present — single-company mode, proceeding as-is');
-    return;
-  }
-
-  await page.click('.o_switch_company_menu button');
-  await page.waitForTimeout(1000);
-
-  const companies = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('.o_switch_company_menu [data-company-id]')).map(el => ({
-      id: el.getAttribute('data-company-id'),
-      label: el.querySelector('.company_label')?.textContent?.trim() || '',
-    }))
-  );
-
-  const odooPrefix = BU_ODOO_PREFIX[TARGET_BU_CODE];
-  const target = companies.find(c => c.label.startsWith(odooPrefix));
-  if (!target) throw new Error(`BU "${TARGET_BU_CODE}" not found in company list`);
-
-  log(`Found BU: ${target.label}`);
-  await page.click(`[data-company-id="${target.id}"] .log_into`);
-  await page.waitForLoadState('load');
-  await page.waitForTimeout(2000);
-  log(`Switched to ${TARGET_BU_CODE}`);
-}
-
-// ─── STEP 5: NAVIGATE TO GENERATE PR TO PO ───────────────────────────────────
-async function navigateToPRtoPO(page) {
-  log('Waiting for navbar to be ready...');
-  await page.waitForSelector('.o_navbar_apps_menu button', { timeout: 30000 });
-  await page.waitForTimeout(1000);
-  log('Opening 9-dot home menu...');
-  await page.click('.o_navbar_apps_menu button');
-  await page.waitForTimeout(1000);
-
-  log('Clicking Purchase app...');
-  await page.click('a.o_app[href*="menu_id=340"]');
-  await page.waitForTimeout(3000);
-
-  log('Clicking Operations → Generate PR to PO...');
-  await page.locator('.o_menu_sections button').filter({ hasText: 'Operations' }).click();
-  await page.waitForTimeout(800);
-  await page.locator('.dropdown-menu a, .dropdown-item').filter({ hasText: 'Generate PR to PO' }).first().click();
-  await page.waitForTimeout(3000);
-  log('On Generate PR to PO page');
-}
-
-// ─── STEP 6: REMOVE DEFAULT FILTER ───────────────────────────────────────────
-async function removeFilter(page) {
-  await page.waitForTimeout(1500);
-  const facet = page.locator('.o_searchview_facet').filter({ hasText: 'Generate PR to PO' });
-  if (await facet.count() > 0) {
-    log('Removing "Generate PR to PO" filter...');
-    await facet.locator('.o_facet_remove').click();
-    await page.waitForTimeout(1500);
-    log('Filter removed');
-  } else {
-    log('No "Generate PR to PO" filter found — skipping');
-  }
-}
-
-// ─── STEP 7: GROUP BY BUYER ───────────────────────────────────────────────────
-async function groupByBuyer(page) {
-  log('Adding Group By: Buyer...');
-  await page.click('.o_searchview_dropdown_toggler');
-  await page.waitForTimeout(800);
-  await page.selectOption('.o_add_custom_group_menu', 'buyer_id');
-  await page.waitForTimeout(1500);
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(800);
-  log('Grouped by Buyer');
-}
-
-// ─── STEP 8: EXPAND BUYER GROUP ──────────────────────────────────────────────
-async function expandBuyerGroup(page) {
-  log(`Expanding ${TARGET_BUYER} group...`);
-  await page.waitForTimeout(1500);
-
-  if (await page.locator('.o_group_header').count() === 0) {
-    throw new Error('No PR groups found — list is empty');
-  }
-
-  const target = page.locator('.o_group_header').filter({ hasText: TARGET_BUYER });
-  if (await target.count() === 0) {
-    throw new Error(`${TARGET_BUYER} group not found — no pending PRs`);
-  }
-
-  await target.first().click();
-  await page.waitForTimeout(2000);
-  log(`${TARGET_BUYER} expanded`);
-}
-
+// STEPS 1–8 (launch browser, select DB, login, switch BU, navigate to
+// Generate PR to PO, remove filter, group by buyer, expand buyer group)
+// live in ./lib/odoo-nav.mjs — shared with odoo_pr_to_po.mjs.
 // STEP 9 (find & select target PR row(s)) and STEP 10 (execute the action)
 // live in ./pr-row-actions.mjs — shared with odoo_pr_to_po.mjs's --generate
 // path so there's exactly one copy of the code that clicks an irreversible
@@ -271,15 +103,18 @@ async function expandBuyerGroup(page) {
   let matched  = [];
 
   try {
-    const conn = await connectAndNavigate();
+    const conn = await connectAndNavigate({ headless: HEADLESS });
     browser = conn.browser;
-    await selectDatabase(conn.page);
-    await login(conn.page);
-    await switchBU(conn.page);
+    await selectDatabase(conn.page, ODOO_URL);
+    await login(conn.page, { username: USERNAME, password: PASSWORD });
+    await switchBU(conn.page, TARGET_BU_CODE, BU_ODOO_PREFIX);
     await navigateToPRtoPO(conn.page);
     await removeFilter(conn.page);
     await groupByBuyer(conn.page);
-    await expandBuyerGroup(conn.page);
+    // Here an absent group is an error, not an early exit — the requested PR
+    // numbers are expected to exist in this list.
+    if (!await expandBuyerGroup(conn.page, TARGET_BUYER))
+      throw new Error(`${TARGET_BUYER} group not found or PR list is empty — no pending PRs`);
     matched = await selectPRRows(conn.page, PR_NUMBERS, TARGET_BUYER, log);
     const executed = await executeOdooAction(conn.page, ACTION, { testMode: TEST_MODE, log });
     result = executed ? 'EXECUTED' : 'DRY-RUN';

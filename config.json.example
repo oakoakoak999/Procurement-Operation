@@ -1,0 +1,19 @@
+{
+  "odooUrl": "https://your-odoo-host.example.com",
+  "refSheet": {
+    "id": "google-sheet-id-of-vendor-min-order-reference",
+    "gid": "0"
+  },
+  "buOdooPrefix": {
+    "BU1": "[BU1:00001]",
+    "BU2": "[BU2:00002]"
+  },
+  "buLogSheets": {
+    "BU1": "google-sheet-id-of-bu1-log",
+    "BU2": "google-sheet-id-of-bu2-log"
+  },
+  "buOrderFolders": {
+    "BU1": "google-drive-folder-id-of-bu1-orders",
+    "BU2": "google-drive-folder-id-of-bu2-orders"
+  }
+}
