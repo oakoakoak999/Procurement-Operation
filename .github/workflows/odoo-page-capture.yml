@@ -1,0 +1,45 @@
+name: Odoo page capture (diagnostic)
+
+# Photographs what the runner actually gets served at Odoo's DB-selector page,
+# to settle whether the batch fails on a SLOW link (real page) or an ABSENT link
+# (403/block page = network wall). Pre-login page: no secrets in the output.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chrome for Playwright
+        run: npx playwright install chrome
+
+      - name: Materialize config from secret
+        shell: bash
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        run: |
+          printf '%s' "$CONFIG_JSON" > config.json
+          jq empty config.json 2>/dev/null || { echo "config.json INVALID"; exit 1; }
+
+      - name: Capture DB-selector page
+        run: node tools/odoo-page-capture.mjs
+
+      - name: Upload capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: odoo-capture
+          path: capture/**
+          if-no-files-found: warn
