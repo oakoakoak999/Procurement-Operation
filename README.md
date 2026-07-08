@@ -36,7 +36,7 @@ That last click is the one action that **cannot be undone**. The code treats it 
 ## What's in this folder
 
 ```
-Claude Code\
+Procurement Operator\
 │
 ├── odoo_pr_to_po.mjs        ← the PR2PO job (main script)
 ├── run-batch.mjs            ← runs the PR2PO job for every BU, a few at a time,
