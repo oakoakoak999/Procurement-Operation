@@ -1,0 +1,29 @@
+name: Odoo connectivity probe
+
+# Answers the gating question for running the batch scripts on Actions:
+# can a GitHub-hosted (cloud) runner even reach the Odoo UAT server?
+# If the host is internal / IP-allowlisted, this fails and cloud runners are a dead end
+# (would need a self-hosted runner on Oak's network instead).
+# Reads odooUrl from the CONFIG_JSON secret; prints only DNS/HTTP status, never the URL.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reach Odoo UAT?
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        run: |
+          url=$(jq -r '.odooUrl' <<< "$CONFIG_JSON" 2>/dev/null)
+          if [ -z "$url" ] || [ "$url" = "null" ]; then echo "no odooUrl in CONFIG_JSON"; exit 1; fi
+          host=$(printf '%s' "$url" | sed -E 's#^https?://##' | cut -d/ -f1)
+          echo "--- DNS ---"
+          if getent hosts "$host" >/dev/null 2>&1; then echo "resolves"; else echo "DOES NOT RESOLVE (internal-only host)"; fi
+          echo "--- TCP/HTTP (20s timeout) ---"
+          if code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 "$url/" 2>/dev/null); then
+            echo "connected — HTTP $code (runner CAN reach Odoo)"
+          else
+            echo "UNREACHABLE — connection failed or timed out (runner CANNOT reach Odoo)"
+          fi
