@@ -1,0 +1,19 @@
+name: Runner public IP
+
+# Prints the cloud runner's public egress IP — the address Cloudflare/Odoo sees.
+# Run it more than once: the IP changes between runs (GitHub draws from thousands
+# of rotating Azure addresses), which is why a single allowlist entry can't pin it.
+on:
+  workflow_dispatch:
+
+jobs:
+  ip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show egress IP
+        run: |
+          echo "=== This runner's public IP (what Odoo's Cloudflare sees) ==="
+          echo "IPv4: $(curl -4 -s --max-time 15 https://api.ipify.org || echo 'n/a')"
+          echo "IPv6: $(curl -6 -s --max-time 15 https://api64.ipify.org || echo 'n/a')"
+          echo ""
+          echo "NOTE: re-run this workflow — the IP will be different next time."
