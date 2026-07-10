@@ -1,5 +1,6 @@
 {
   "odooUrl": "https://your-odoo-host.example.com",
+  "odooUrlGha": "https://gha-your-odoo-host.example.com (OPTIONAL — used only when GITHUB_ACTIONS=true; omit on a human PC)",
   "refSheet": {
     "id": "google-sheet-id-of-vendor-min-order-reference",
     "gid": "0"
