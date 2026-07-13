@@ -556,7 +556,7 @@ async function validateAndAppend(newRows, headers) {
 
         const refs = itemCode ? refMap.get(`${buCode}|${itemCode}`) : null;
         if (!refs) continue;
-        vt.minRequired = Math.max(vt.minRequired, ...refs.map(r => parseFloat(r['Minimum Order']) || 0));
+        vt.minRequired = Math.max(vt.minRequired, ...refs.map(r => parseFloat(String(r['Minimum Order'] ?? '').replace(/,/g, '')) || 0));
       }
 
       for (const [vendor, { total, minRequired }] of vendorTotals) {
