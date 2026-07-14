@@ -430,13 +430,19 @@ async function validateAndAppend(newRows, headers) {
     refRows = await fetchRefRows();
   } catch (e) {
     log(`WARNING: Could not fetch reference GSheet (${e.message}) — appending all rows without validation`);
-    const sheets = await getSheetClient();
-    const appendRes = await sheets.spreadsheets.values.append({
-      spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
-      valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: newRows },
-    });
-    await tryFixFormatting(sheets, appendRes, headers);
+    // --test writes NOTHING to the dedup log: a dry-run row would poison the
+    // dedup key and make a later real run skip that PR (a silently missing PO).
+    if (!TEST_MODE) {
+      const sheets = await getSheetClient();
+      const appendRes = await sheets.spreadsheets.values.append({
+        spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
+        valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: newRows },
+      });
+      await tryFixFormatting(sheets, appendRes, headers);
+    } else {
+      log(`TEST: skipped log-sheet append of ${newRows.length} unvalidated row(s)`);
+    }
     // passingPRNumbers stays empty — unvalidated rows must never be auto-generated
     return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true, passingPRNumbers: [], tier2Count: 0 };
   }
@@ -582,8 +588,9 @@ async function validateAndAppend(newRows, headers) {
     }
   }
 
-  // Append only passing rows
-  if (passingRows.length > 0) {
+  // Append only passing rows — but never under --test (a dry-run row poisons the
+  // dedup key so a later real run skips that PR, silently dropping its PO).
+  if (passingRows.length > 0 && !TEST_MODE) {
     const sheets = await getSheetClient();
     const appendRes = await sheets.spreadsheets.values.append({
       spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
@@ -594,7 +601,7 @@ async function validateAndAppend(newRows, headers) {
   }
 
   const totalRejected = rejectedItems.length;
-  log(`Appended ${passingRows.length} row(s). Rejected ${totalRejected} PR(s).`);
+  log(`${TEST_MODE ? 'Would append (TEST — not written)' : 'Appended'} ${passingRows.length} row(s). Rejected ${totalRejected} PR(s).`);
   if (totalRejected === 0) log('All PRs passed vendor and minimum order checks');
 
   if (tier2PassPRNumbers.length > 0) log(`Passed via 2nd tier vendor: ${tier2PassPRNumbers.join(', ')}`);

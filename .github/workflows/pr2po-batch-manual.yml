@@ -3,9 +3,9 @@ name: PR2PO batch (manual, one BU dry-run)
 # Manual, single-BU dry-run of the PR2PO batch on a cloud runner.
 # Proves the full chain works on GitHub Actions: Windows runner -> materialize
 # config/tokens from secrets -> headless Chrome -> Odoo login -> Google OAuth
-# refresh -> pipeline. Runs with --test (no PO generate click fires) and
-# --max-parallel=1. NOTE: --test still appends real rows to the BU's live log
-# sheet (there is no fully side-effect-free mode) — clean those up afterward.
+# refresh -> pipeline. Runs with --test (no PO generate click fires, and no rows
+# are written to the BU's live log sheet — the dedup log stays clean) and
+# --max-parallel=1.
 on:
   workflow_dispatch:
     inputs:
