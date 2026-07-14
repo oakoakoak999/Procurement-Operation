@@ -130,6 +130,8 @@ async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skip
     const sheets = await getSheetClient();
 
     const d = new Date(), p = v => String(v).padStart(2, '0');
+    // Tag dry-run rows so the audit tab can tell them from live runs.
+    const execStatus = TEST_MODE ? `${status} (TEST)` : status;
     await sheets.spreadsheets.values.append({
       spreadsheetId: GSHEET_LOG_ID,
       range: `'${GSHEET_EXEC_TAB}'!A:N`,
@@ -138,7 +140,7 @@ async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skip
         runId,
         `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`,
         `${p(d.getHours())}:${p(d.getMinutes())}`,
-        status,
+        execStatus,
         exportedRows    ?? '',
         appendedRows    ?? '',
         skippedRows     ?? '',
@@ -151,7 +153,7 @@ async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skip
         error            ?? '',
       ]]},
     });
-    log(`Execute log → "${status}" written to "${GSHEET_EXEC_TAB}" tab`);
+    log(`Execute log → "${execStatus}" written to "${GSHEET_EXEC_TAB}" tab`);
   } catch (e) {
     log(`WARNING: Could not write execute log: ${e.message}`);
   }
