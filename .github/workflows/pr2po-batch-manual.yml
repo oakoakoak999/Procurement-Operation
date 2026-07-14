@@ -1,11 +1,17 @@
-name: PR2PO batch (manual, one BU dry-run)
+name: PR2PO batch (manual, one BU)
 
-# Manual, single-BU dry-run of the PR2PO batch on a cloud runner.
+# Manual, single-BU run of the PR2PO batch on a cloud runner.
 # Proves the full chain works on GitHub Actions: Windows runner -> materialize
 # config/tokens from secrets -> headless Chrome -> Odoo login -> Google OAuth
-# refresh -> pipeline. Runs with --test (no PO generate click fires, and no rows
-# are written to the BU's live log sheet — the dedup log stays clean) and
-# --max-parallel=1.
+# refresh -> pipeline. Env is UAT (lib/config.mjs auto-selects odooUrlGha on
+# GITHUB_ACTIONS); prod is not wired.
+#
+# The `mode` input controls how far the run goes:
+#   dry-run           --test              no generate click, no dedup-log write (side-effect-free)
+#   rehearse-generate --generate --test   exercises row selection/scoping, then Escapes — still 0 POs
+#   generate-live     --generate          FIRES REAL POs — clicks "Generate to PO" in Odoo
+# generate-live produces unconfirmed POs (the confirm-PO step is separate and
+# untouched) — reversible, no vendor dispatch. Use deliberately.
 on:
   workflow_dispatch:
     inputs:
@@ -17,6 +23,15 @@ on:
         description: "Single BU code (e.g. PKPP)"
         default: PKPP
         required: true
+      mode:
+        description: "How far to run"
+        type: choice
+        default: dry-run
+        required: true
+        options:
+          - dry-run
+          - rehearse-generate
+          - generate-live
 
 permissions:
   contents: write   # runner must push the agent-memory folder (Decision Log) back on a real run
@@ -54,7 +69,7 @@ jobs:
             if jq empty "$f" 2>/dev/null; then echo "$f: ok"; else echo "$f: INVALID JSON"; exit 1; fi
           done
 
-      - name: Run one BU (dry-run, headless)
+      - name: Run one BU (headless)
         shell: bash
         env:
           ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
@@ -67,8 +82,18 @@ jobs:
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           PROFILE: ${{ inputs.profile }}
           BU: ${{ inputs.bu }}
+          MODE: ${{ inputs.mode }}
         run: |
-          node run-batch.mjs "$PROFILE" --test --headless --bu="$BU" --max-parallel=1
+          # Translate the mode input into pipeline flags. Fail closed on anything
+          # unexpected so a typo can never fall through to a live generate.
+          case "$MODE" in
+            dry-run)           FLAGS="--test" ;;
+            rehearse-generate) FLAGS="--generate --test" ;;
+            generate-live)     FLAGS="--generate" ;;
+            *) echo "Unknown mode: $MODE" >&2; exit 1 ;;
+          esac
+          echo "[MODE] $MODE -> $FLAGS"
+          node run-batch.mjs "$PROFILE" $FLAGS --headless --bu="$BU" --max-parallel=1
 
       - name: Upload run summary (structured files only)
         # NOT runs/** — the raw per-BU .log is unfiltered child stderr, and
