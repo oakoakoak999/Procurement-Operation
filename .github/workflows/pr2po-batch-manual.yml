@@ -61,6 +61,10 @@ jobs:
           ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
           GDRIVE_CLIENT_ID: ${{ vars.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          # Cloudflare Access service token — opens the gha door from the cloud runner.
+          # No-op locally (cfAccessHeaders() returns {} when these are unset).
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           PROFILE: ${{ inputs.profile }}
           BU: ${{ inputs.bu }}
         run: |

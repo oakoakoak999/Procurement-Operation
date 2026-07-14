@@ -1,10 +1,11 @@
 name: Odoo connectivity probe
 
-# Answers the gating question for running the batch scripts on Actions:
-# can a GitHub-hosted (cloud) runner even reach the Odoo UAT server?
-# If the host is internal / IP-allowlisted, this fails and cloud runners are a dead end
-# (would need a self-hosted runner on Oak's network instead).
-# Reads odooUrl from the CONFIG_JSON secret; prints only DNS/HTTP status, never the URL.
+# Answers the gating question for running the batch on Actions:
+# can a GitHub-hosted (cloud) runner reach Odoo UAT through the Cloudflare-gated
+# "gha" door using the CF Access service token?
+# Tests odooUrlGha from the CONFIG_JSON secret, sending the CF_ACCESS_* service
+# token as CF-Access-Client-Id / CF-Access-Client-Secret headers.
+# Prints only DNS/HTTP status + a token verdict — never the URL or the token.
 on:
   workflow_dispatch:
 
@@ -12,18 +13,32 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Reach Odoo UAT?
+      - name: Reach Odoo UAT via the gha door?
         env:
           CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
-          url=$(jq -r '.odooUrl' <<< "$CONFIG_JSON" 2>/dev/null)
-          if [ -z "$url" ] || [ "$url" = "null" ]; then echo "no odooUrl in CONFIG_JSON"; exit 1; fi
+          url=$(jq -r '.odooUrlGha // empty' <<< "$CONFIG_JSON" 2>/dev/null)
+          if [ -z "$url" ]; then
+            echo "no odooUrlGha in CONFIG_JSON — do checklist item 3 (add the gha URL to the CONFIG_JSON secret) first"
+            exit 1
+          fi
+          if [ -z "$CF_ACCESS_CLIENT_ID" ] || [ -z "$CF_ACCESS_CLIENT_SECRET" ]; then
+            echo "WARNING: CF_ACCESS_CLIENT_ID/SECRET not set — the gha door will 403 until checklist item 2 is done"
+          fi
           host=$(printf '%s' "$url" | sed -E 's#^https?://##' | cut -d/ -f1)
           echo "--- DNS ---"
           if getent hosts "$host" >/dev/null 2>&1; then echo "resolves"; else echo "DOES NOT RESOLVE (internal-only host)"; fi
-          echo "--- TCP/HTTP (20s timeout) ---"
-          if code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 "$url/" 2>/dev/null); then
-            echo "connected — HTTP $code (runner CAN reach Odoo)"
-          else
-            echo "UNREACHABLE — connection failed or timed out (runner CANNOT reach Odoo)"
-          fi
+          echo "--- TCP/HTTP with CF Access token (20s timeout) ---"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 \
+            -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+            "$url/" 2>/dev/null) || code="000"
+          echo "--- VERDICT (HTTP $code) ---"
+          case "$code" in
+            200|301|302|303) echo "gha door OPEN — token accepted, runner CAN reach Odoo" ;;
+            403)             echo "BLOCKED — 403: token rejected or host still walled (check CF secrets + that IT scoped the gha door to this token)" ;;
+            000)             echo "UNREACHABLE — connection failed or timed out" ;;
+            *)               echo "UNEXPECTED — inspect manually" ;;
+          esac
