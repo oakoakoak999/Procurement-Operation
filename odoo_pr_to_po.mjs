@@ -122,17 +122,17 @@ async function fetchRefRows() {
   return rows;
 }
 
-// Row order must match the Execute Log tab's headers (A→O). New columns are
+// Row order must match the Execute Log tab's headers (A→N). New columns are
 // appended at the end, never inserted mid-row, so historical rows' existing
-// columns don't shift ("Appended (2nd Tier Vendor)" = column O, 2026-07-03).
-async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skippedRows, rejectedRows, rejectedVendor, rejectedMinOrder, rejectedItems, rejectionReasons, stoppedAt, error, appendedTier2Vendor }) {
+// columns don't shift.
+async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skippedRows, rejectedRows, rejectedVendor, rejectedMinOrder, rejectedItems, rejectionReasons, stoppedAt, error }) {
   try {
     const sheets = await getSheetClient();
 
     const d = new Date(), p = v => String(v).padStart(2, '0');
     await sheets.spreadsheets.values.append({
       spreadsheetId: GSHEET_LOG_ID,
-      range: `'${GSHEET_EXEC_TAB}'!A:O`,
+      range: `'${GSHEET_EXEC_TAB}'!A:N`,
       valueInputOption: 'USER_ENTERED',
       requestBody: { values: [[
         runId,
@@ -149,7 +149,6 @@ async function writeExecuteLog({ runId, status, exportedRows, appendedRows, skip
         rejectionReasons ?? '',
         stoppedAt        ?? '',
         error            ?? '',
-        appendedTier2Vendor ?? '',
       ]]},
     });
     log(`Execute log → "${status}" written to "${GSHEET_EXEC_TAB}" tab`);
