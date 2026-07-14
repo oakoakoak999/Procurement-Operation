@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read   # identical to the real batch workflow — do not change
+  contents: write   # VERIFY PASS: now matches the fixed batch workflow — expect PUSH to SUCCEED
 
 jobs:
   push-test:
@@ -38,8 +38,8 @@ jobs:
       - name: "Step B — set identity, commit if needed, pull, push"
         continue-on-error: true
         run: |
-          git config user.name  "gha-memory-push-test"
-          git config user.email "gha@procurement.local"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Commit only if Step A didn't (i.e. change still staged).
           if git diff --cached --quiet; then
             echo "already committed in Step A"

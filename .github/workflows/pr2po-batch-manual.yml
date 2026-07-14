@@ -19,7 +19,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write   # runner must push the agent-memory folder (Decision Log) back on a real run
 
 jobs:
   run:
