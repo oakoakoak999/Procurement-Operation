@@ -26,6 +26,7 @@ import { join, dirname } from 'path';
 import { BU_ODOO_PREFIX } from './lib/config.mjs';
 import { makeRunId } from './lib/util.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
+import { appendExecutionLog } from './lib/execution-log.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -130,9 +131,13 @@ function runBU(bu) {
   console.log(`\n${md}`);
   console.log(`[BATCH] Written: ${join(RUN_DIR, 'summary.md')}`);
 
-  // Real generates may have appended leftover/decision files — one sync for
-  // the whole batch, after all pipeline processes have exited.
+  // Real runs (not dry/rehearse) append a per-BU block to the dated execution
+  // log, then one sync pushes the whole memory folder — after all pipeline
+  // processes have exited. Dry/rehearse runs are throwaway: no log, no push.
   if (!PASS_FLAGS.includes('--test')) {
+    const mode = PASS_FLAGS.includes('--generate') ? 'live' : 'validate';
+    const logFile = appendExecutionLog(results, mode, __dir);
+    console.log(`[BATCH] Execution log: ${logFile}`);
     syncMemoryFolder(`Batch ${BATCH_ID}: ${PROFILE} memory sync`);
   }
 

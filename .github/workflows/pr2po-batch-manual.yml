@@ -72,6 +72,9 @@ jobs:
       - name: Run one BU (headless)
         shell: bash
         env:
+          # Runners are UTC; mint RUN_IDs and execution-log timestamps in
+          # Bangkok so they match the +07 heading the log writer emits.
+          TZ: Asia/Bangkok
           ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
           ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
           GDRIVE_CLIENT_ID: ${{ vars.GDRIVE_CLIENT_ID }}
