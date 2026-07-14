@@ -1,0 +1,57 @@
+name: Memory push test (throwaway)
+
+# Isolated experiment: can a cloud runner push the agent-memory folder back to
+# the repo? Replicates lib/memory-sync.mjs's git sequence (add -> commit -> pull
+# -> push) STEP BY STEP so we see exactly where it fails — commit identity vs
+# push permission. No Odoo, no Google, no PO, no --generate. Uses the SAME
+# `permissions: contents: read` as pr2po-batch-manual.yml, because that read-only
+# token is precisely what's under test.
+#
+# THROWAWAY: delete this workflow (and revert any junk commit it lands) once the
+# question is answered.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read   # identical to the real batch workflow — do not change
+
+jobs:
+  push-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make a throwaway change in the memory folder
+        run: |
+          echo "push-test $(date -u +%FT%TZ) run ${GITHUB_RUN_ID}" >> agents/procurement-operator/memory/.push-test.md
+          git add agents/procurement-operator/memory
+          echo "=== staged ==="
+          git diff --cached --name-only
+
+      - name: "Step A — commit with NO identity (mirrors memory-sync as-is)"
+        id: commit_noident
+        continue-on-error: true
+        run: |
+          git commit -m "memory push test (no identity)"
+          echo "COMMIT-A: succeeded (runner had a git identity)"
+
+      - name: "Step B — set identity, commit if needed, pull, push"
+        continue-on-error: true
+        run: |
+          git config user.name  "gha-memory-push-test"
+          git config user.email "gha@procurement.local"
+          # Commit only if Step A didn't (i.e. change still staged).
+          if git diff --cached --quiet; then
+            echo "already committed in Step A"
+          else
+            git commit -m "memory push test (with identity)"
+            echo "COMMIT-B: committed after setting identity"
+          fi
+          echo "=== git pull --no-rebase ==="
+          git pull --no-rebase && echo "PULL: ok" || echo "PULL: FAILED"
+          echo "=== git push ==="
+          if git push; then
+            echo "PUSH: SUCCEEDED — runner CAN write back to the repo"
+          else
+            echo "PUSH: FAILED — runner CANNOT write back (expected under contents: read)"
+          fi
