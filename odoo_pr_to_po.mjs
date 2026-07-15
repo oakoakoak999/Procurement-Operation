@@ -36,6 +36,8 @@ import {
   navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
   navigateToRFQList, scrapePONumbers,
 } from './lib/odoo-nav.mjs';
+import { appendExecutionLog } from './lib/execution-log.mjs';
+import { syncMemoryFolder } from './lib/memory-sync.mjs';
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -846,17 +848,32 @@ async function checkpointD(exportPaths, runStats) {
     // leave the exported procurement data sitting in Downloads (ENOENT-safe
     // no-op when cleanup already ran).
     if (exportPaths) cleanup(exportPaths);
-    // Machine-readable result for run-batch.mjs — the batch summary reads this
-    // instead of regex-matching console text.
+    // Machine-readable result — the shape both run-batch.mjs and the execution
+    // log consume. Built once, whether we're a batch child or a direct run.
+    const resultObj = {
+      ...runStats,
+      bu: CONFIG.bu, profile: CONFIG.profileKey, testMode: TEST_MODE,
+      generateMatched: runStats.generateMatched.map(m => ({ pr: m.prNumber, po: m.poNumber || null })),
+    };
     if (process.env.PR2PO_RESULT_FILE) {
+      // Batch child: hand the result to run-batch.mjs, which appends the
+      // execution-log block and pushes ONCE after every lane has exited (per-BU
+      // pushes from parallel processes would race — see lib/memory-sync.mjs).
       try {
-        writeFileSync(process.env.PR2PO_RESULT_FILE, JSON.stringify({
-          ...runStats,
-          bu: CONFIG.bu, profile: CONFIG.profileKey, testMode: TEST_MODE,
-          generateMatched: runStats.generateMatched.map(m => ({ pr: m.prNumber, po: m.poNumber || null })),
-        }, null, 2));
+        writeFileSync(process.env.PR2PO_RESULT_FILE, JSON.stringify(resultObj, null, 2));
       } catch (e) {
         console.warn(`⚠ Result file write failed: ${e.message}`);
+      }
+    } else if (!TEST_MODE) {
+      // Direct single-BU run: no batch wrapper to log for us, so append our own
+      // execution-log block and push the memory folder. Safe here — one process,
+      // not concurrent. Dry (--test) runs are rehearsals: no log, no push.
+      try {
+        const logFile = appendExecutionLog([resultObj], GENERATE ? 'live' : 'validate', __dir);
+        console.log(`[OPERATOR] Execution log: ${logFile}`);
+        syncMemoryFolder(`PR2PO ${CONFIG.profileKey} ${CONFIG.bu} (${RUN_ID}) memory sync`);
+      } catch (e) {
+        console.warn(`⚠ Execution-log append/sync failed (run already done): ${e.message}`);
       }
     }
     await Promise.all([
