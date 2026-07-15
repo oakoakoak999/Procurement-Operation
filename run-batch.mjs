@@ -113,8 +113,8 @@ function runBU(bu) {
     const gen = !PASS_FLAGS.includes('--generate') ? '-'
       : r.generateError ? 'FAILED'
       : !r.generateAttempted ? '-'
-      : r.testMode ? `DRY-RUN (${(r.generateMatched || []).join(', ')})`
-      : `EXECUTED (${(r.generateMatched || []).join(', ')})`;
+      : r.testMode ? `DRY-RUN (${(r.generateMatched || []).map(x => x.pr).join(', ')})`
+      : `EXECUTED (${(r.generateMatched || []).map(x => x.po || x.pr).join(', ')})`;
     return `| ${r.bu} | ${r.status} | ${r.appendedRows ?? '-'} | ${r.rejectedRows ?? '-'} | ${gen} | ${r.error || ''} |`;
   };
   const md = [

@@ -34,6 +34,7 @@ import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/s
 import {
   connectAndNavigate, selectDatabase, login, switchBU,
   navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
+  navigateToRFQList, scrapePONumbers,
 } from './lib/odoo-nav.mjs';
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────
@@ -656,6 +657,21 @@ async function generateApprovedPOs(page, prNumbers) {
 
   const matched  = await selectPRRows(page, prNumbers, TARGET_BUYER, log);
   const executed = await executeOdooAction(page, 'approve', { testMode: TEST_MODE, log });
+
+  // Option 2: read the real PO number(s) back from the RFQ list (Source Document
+  // = PR, Reference = PO). Non-fatal — a scrape miss leaves poNumber null and the
+  // execution log falls back to a "generated" placeholder. Skipped in --test
+  // (no PO was actually created to look up).
+  if (executed && !TEST_MODE) {
+    try {
+      await navigateToRFQList(page);
+      const poByPR = await scrapePONumbers(page, matched.map(m => m.prNumber), log);
+      for (const m of matched) m.poNumber = poByPR.get(m.prNumber) || null;
+    } catch (e) {
+      log(`WARNING: PO-number scrape failed (non-fatal, logging as 'generated'): ${e.message}`);
+    }
+  }
+
   return { attempted: true, executed, matched };
 }
 
@@ -837,7 +853,7 @@ async function checkpointD(exportPaths, runStats) {
         writeFileSync(process.env.PR2PO_RESULT_FILE, JSON.stringify({
           ...runStats,
           bu: CONFIG.bu, profile: CONFIG.profileKey, testMode: TEST_MODE,
-          generateMatched: runStats.generateMatched.map(m => m.prNumber),
+          generateMatched: runStats.generateMatched.map(m => ({ pr: m.prNumber, po: m.poNumber || null })),
         }, null, 2));
       } catch (e) {
         console.warn(`⚠ Result file write failed: ${e.message}`);
