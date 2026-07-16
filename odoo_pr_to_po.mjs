@@ -730,8 +730,9 @@ async function checkpointA() {
 async function checkpointB(page) {
   return withRetry('B: login + BU', async () => {
     step('3/12 login');            await login(page, { username: USERNAME, password: PASSWORD });
-    step('4/12 switchBU');         await switchBU(page, TARGET_BU_CODE, BU_ODOO_PREFIX);
+    step('4/12 switchBU');         const landedBU = await switchBU(page, TARGET_BU_CODE, BU_ODOO_PREFIX);
     step('5/12 navigateToPRtoPO'); await navigateToPRtoPO(page);
+    return landedBU;
   });
 }
 
@@ -794,7 +795,7 @@ async function checkpointD(exportPaths, runStats) {
   console.log(`[OPERATOR] Log tab: ${CONFIG.logTab}`);
 
   const runStats = {
-    runId: RUN_ID, status: 'SUCCESS',
+    runId: RUN_ID, status: 'SUCCESS', landedBU: null,
     exportedRows: null, appendedRows: null, skippedRows: null,
     rejectedRows: null, rejectedVendor: null, rejectedMinOrder: null, rejectedItems: null, rejectionReasons: null,
     appendedTier2Vendor: 0, tier2PassPRNumbers: [],
@@ -806,7 +807,7 @@ async function checkpointD(exportPaths, runStats) {
   let exportPaths;
   try {
     conn = await checkpointA();
-    await checkpointB(conn.page);
+    runStats.landedBU = await checkpointB(conn.page);
     exportPaths = await checkpointC(conn.page);
     await checkpointD(exportPaths, runStats);
 
