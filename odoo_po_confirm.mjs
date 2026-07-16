@@ -24,7 +24,9 @@ import { join, dirname } from 'path';
 import { connectAndNavigate, selectDatabase, login, switchBU, navigateToRFQList } from './lib/odoo-nav.mjs';
 import { parseOdooDate, addWorkingDays, formatDDMMYYYY, formatOdooDateTime, bangkokToday } from './lib/arrival-date.mjs';
 import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
-import { loadEnv, log } from './lib/util.mjs';
+import { loadEnv, log, makeRunId } from './lib/util.mjs';
+import { appendConfirmLog } from './lib/execution-log.mjs';
+import { syncMemoryFolder } from './lib/memory-sync.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 loadEnv(join(__dir, '.env'));
@@ -93,12 +95,64 @@ async function backToList(page) {
   await page.waitForTimeout(1000);
 }
 
+// The RFQ list is unfiltered by default and returns exactly 80 rows — Odoo's
+// page size, i.e. page 1 of an unknown number. Scoping it to the RFQ >> None
+// favourite (state=RFQ, Doc Approve=None) collapses it to the handful that
+// actually need confirming. Throws if the favourite is missing rather than
+// falling back to the unscoped list: a silent fallback would confirm from an
+// 80-row mixed list and quietly miss everything on page 2.
+async function applyRFQFilter(page) {
+  log('Applying "RFQ >> None" filter...');
+  await page.click('.o_searchview_dropdown_toggler');
+  await page.waitForTimeout(1000);
+  const fav = page.locator('.dropdown-item, .o_menu_item').filter({ hasText: 'RFQ >> None' }).first();
+  if (await fav.count() === 0) throw new Error('Favourite "RFQ >> None" not found — refusing to run against the unscoped list');
+  await fav.click();
+  await page.waitForTimeout(1500);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(800);
+
+  const facets = (await page.locator('.o_searchview_facet').allInnerTexts()).join(' ');
+  if (!/RFQ/.test(facets)) throw new Error(`Filter did not apply — facets read ${JSON.stringify(facets)}`);
+  log(`Filter applied: ${facets.replace(/\s+/g, ' ').trim()}`);
+}
+
+// Pagination is the difference between "confirmed all of them" and "confirmed
+// the ones that happened to be on page 1". Refuse to guess.
+async function assertSinglePage(page) {
+  const txt = (await page.locator('.o_pager_counter, .o_pager').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+  const m = txt.match(/(\d+)\s*-\s*(\d+)\s*\/\s*(\d+)/);
+  if (!m) { log(`Pager not parsed (${JSON.stringify(txt)}) — assuming single page`); return; }
+  if (Number(m[2]) < Number(m[3])) throw new Error(`RFQ list spans multiple pages (${txt}) — refusing to run and silently skip the rest`);
+  log(`Pager: ${txt} — single page`);
+}
+
+// Scans the current list for RFQs belonging to this profile's buyer.
+async function findTargets(page) {
+  const rows = page.locator('tr.o_data_row');
+  const out = [];
+  for (let i = 0; i < await rows.count(); i++) {
+    const row = rows.nth(i);
+    const [state, buyer, name, origin] = await Promise.all(
+      ['state', 'buyer_id', 'name', 'origin'].map(f => cell(row, f))
+    );
+    if (state === 'RFQ' && buyer === CONFIG.buyer) out.push({ name, origin });
+  }
+  return out;
+}
+
+const RUN_ID = makeRunId();
+const MODE   = CONFIRM ? 'live' : 'dry-run';
+
 (async () => {
-  console.log(`[OPERATOR] Confirm PO — Profile: ${PROFILE_KEY.toUpperCase()} (${CONFIG.buyer}, +${CONFIG.workingDays} working days) | BU: ${TARGET_BU} | ${CONFIRM ? 'LIVE' : 'DRY-RUN'}`);
+  console.log(`[OPERATOR] Confirm PO — RUN_ID: ${RUN_ID} | Profile: ${PROFILE_KEY.toUpperCase()} (${CONFIG.buyer}, +${CONFIG.workingDays} working days) | BU: ${TARGET_BU} | ${CONFIRM ? 'LIVE' : 'DRY-RUN'}`);
 
   const conn = await connectAndNavigate({ headless: HEADLESS });
   const { page } = conn;
   const done = [], skipped = [], failed = [];
+  let leftover = null;
+  let targetCount = 0;
+  let runError = null;
 
   try {
     await selectDatabase(page, ODOO_URL);
@@ -115,18 +169,14 @@ async function backToList(page) {
     await page.waitForTimeout(3000);
 
     await navigateToRFQList(page);
+    await applyRFQFilter(page);
+    await assertSinglePage(page);
 
-    // Collect targets up front: the row list goes stale once we start opening
-    // records, and a confirmed PO drops out of RFQ state and reorders the list.
-    const rows = page.locator('tr.o_data_row');
-    const targets = [];
-    for (let i = 0; i < await rows.count(); i++) {
-      const row = rows.nth(i);
-      const [state, buyer, name, origin] = await Promise.all(
-        ['state', 'buyer_id', 'name', 'origin'].map(f => cell(row, f))
-      );
-      if (state === 'RFQ' && buyer === CONFIG.buyer) targets.push({ name, origin });
-    }
+    // Collect targets up front, then re-find each by PO number rather than row
+    // index: confirming a PO drops it out of the filtered list, so any cached
+    // index would point at the wrong record on the next pass.
+    const targets = await findTargets(page);
+    targetCount = targets.length;
 
     log(`${targets.length} RFQ(s) for ${CONFIG.buyer} in ${TARGET_BU}`);
     if (targets.length === 0) { log('Nothing to confirm'); return; }
@@ -158,14 +208,47 @@ async function backToList(page) {
         await backToList(page).catch(() => {});
       }
     }
+
+    // Completion proof: re-scan the filtered list. A confirmed PO leaves RFQ
+    // state and drops out, so anything still listed was NOT confirmed. Without
+    // this the run reports "3 confirmed" and exits clean while POs sit pending.
+    if (CONFIRM) {
+      const left = await findTargets(page);
+      leftover = left.map(l => l.name);
+      const unexplained = leftover.filter(n => !failed.some(f => f.startsWith(n)));
+      if (unexplained.length) log(`WARNING: still pending and not accounted for by a failure: ${unexplained.join(', ')}`);
+      else if (leftover.length === 0) log('Verified: no RFQs remain for this buyer');
+    }
+  } catch (err) {
+    // A fatal error (login, navigation, filter refusing to apply) still gets
+    // logged in the finally — an aborted run is exactly the kind of execution
+    // that must leave a trace.
+    runError = err.message.split('\n')[0];
+    throw err;
   } finally {
     console.log('\n════ SUMMARY ════');
     console.log(`Mode      : ${CONFIRM ? 'LIVE (--confirm)' : 'DRY-RUN — nothing written'}`);
     console.log(`Confirmed : ${done.length}`);
     console.log(`Would do  : ${skipped.length}`);
     console.log(`Failed    : ${failed.length}`);
+    if (leftover !== null) console.log(`Still RFQ : ${leftover.length}${leftover.length ? ` (${leftover.join(', ')})` : ' — all done'}`);
     for (const f of failed) console.log(`  FAIL  ${f}`);
+
+    // Standing rule: every execution logs, dry-run included. Wrapped so a
+    // logging problem can't mask the run's real outcome.
+    try {
+      const logFile = appendConfirmLog({
+        runId: RUN_ID, mode: MODE, profile: PROFILE_KEY, bu: TARGET_BU,
+        targets: targetCount, done, planned: skipped, failed,
+        stillRFQ: leftover, error: runError,
+      }, __dir);
+      log(`Execution logged → ${logFile}`);
+      syncMemoryFolder(`Confirm-PO ${PROFILE_KEY} ${TARGET_BU} (${RUN_ID}) [${MODE}] memory sync`);
+    } catch (e) {
+      log(`WARNING: could not write execution log: ${e.message.split('\n')[0]}`);
+    }
+
     await conn.browser.close().catch(() => {});
-    if (failed.length) process.exitCode = 1;
+    if (failed.length || runError) process.exitCode = 1;
   }
 })();
