@@ -1,0 +1,70 @@
+name: PO confirm (manual, one BU)
+
+# Peer of pr2po-batch-manual.yml. Runs odoo_po_confirm.mjs on a cloud runner.
+# dry-run (--test) navigates + reports but never clicks Confirm; confirm-live
+# (--confirm) writes date_planned and confirms every RFQ for the profile's buyer
+# in the BU. Either mode writes an execution-log block into the agent memory
+# folder and pushes it back (needs contents: write below).
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Profile: supply | medicine"
+        default: supply
+        required: true
+      bu:
+        description: "Single BU code (e.g. PSUV)"
+        default: PSUV
+        required: true
+      mode:
+        description: "Run mode"
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - confirm-live
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - run: npx playwright install chrome
+
+      - name: Materialize config
+        shell: bash
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+        run: |
+          printf '%s' "$CONFIG_JSON" > config.json
+          jq empty config.json 2>/dev/null || { echo "config.json is not valid JSON"; exit 1; }
+
+      - name: Run PO confirm
+        shell: bash
+        env:
+          TZ: Asia/Bangkok
+          ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
+          ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          PROFILE: ${{ inputs.profile }}
+          BU: ${{ inputs.bu }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          case "$MODE" in
+            dry-run)      FLAGS="--test" ;;
+            confirm-live) FLAGS="--confirm" ;;
+            *) echo "unknown mode: $MODE"; exit 1 ;;
+          esac
+          node odoo_po_confirm.mjs "$PROFILE" "$BU" --headless $FLAGS

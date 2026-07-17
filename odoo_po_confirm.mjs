@@ -15,8 +15,10 @@
  * renders it as relative text ("21 days ago").
  *
  * Dry-run by default: reads and reports, writes nothing. --confirm executes.
+ * --test forces dry-run and overrides --confirm, so a workflow can pass the
+ * explicit no-click flag and never fire a Confirm even if --confirm slips in.
  *
- * Usage: node odoo_po_confirm.mjs <profile> <BU_CODE> [--headless] [--confirm]
+ * Usage: node odoo_po_confirm.mjs <profile> <BU_CODE> [--headless] [--test] [--confirm]
  */
 
 import { fileURLToPath } from 'url';
@@ -40,10 +42,13 @@ const PROFILES = {
   medicine: { buyer: 'MEDICINE_BUYER', workingDays: 10 },
 };
 
-const USAGE = 'Usage: node odoo_po_confirm.mjs <profile> <BU_CODE> [--headless] [--confirm]\nProfiles: supply | medicine';
+const USAGE = 'Usage: node odoo_po_confirm.mjs <profile> <BU_CODE> [--headless] [--test] [--confirm]\nProfiles: supply | medicine';
 const [PROFILE_KEY, TARGET_BU] = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const HEADLESS = process.argv.includes('--headless');
-const CONFIRM  = process.argv.includes('--confirm');
+const TEST     = process.argv.includes('--test');
+// --test hard-overrides --confirm: an explicit dry-run must never click Confirm,
+// even if both flags are present. Absence of --confirm is also dry-run.
+const CONFIRM  = process.argv.includes('--confirm') && !TEST;
 
 if (!PROFILE_KEY || !TARGET_BU) throw new Error(USAGE);
 const CONFIG = PROFILES[PROFILE_KEY];
