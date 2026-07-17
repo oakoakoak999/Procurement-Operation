@@ -60,8 +60,15 @@ const cell = async (row, field) => (await row.locator(`td[name="${field}"]`).inn
 // Throws rather than guessing: a missing anchor must never silently become
 // "today", which would write a plausible-looking wrong date onto a real PO.
 async function computeArrival(page) {
+  // Wait for the field rather than a fixed delay: on a headless runner the form
+  // can render after the caller's 2s wait, so a bare count()===0 check throws on
+  // a PO whose form is merely slow (seen with 57PO26070002 on Actions).
   const el = page.locator('div[name="date_order"] input').first();
-  if (await el.count() === 0) throw new Error('date_order input not found on form');
+  try {
+    await el.waitFor({ state: 'visible', timeout: 15000 });
+  } catch {
+    throw new Error('date_order input not found on form');
+  }
   const raw = await el.inputValue();
   const anchor  = parseOdooDate(raw);
   const arrival = addWorkingDays(anchor, CONFIG.workingDays);
