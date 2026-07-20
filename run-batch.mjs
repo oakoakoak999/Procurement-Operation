@@ -18,7 +18,7 @@
  * concurrently (see lib/memory-sync.mjs).
  */
 
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { fileURLToPath } from 'url';
@@ -28,6 +28,7 @@ import { makeRunId } from './lib/util.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
 import { appendExecutionLog } from './lib/execution-log.mjs';
 import { upsertLeftovers } from './lib/leftover-table.mjs';
+import { appendEpisodeRow } from './lib/episode-index.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -70,6 +71,13 @@ function runBU(bu) {
 }
 
 (async () => {
+  // Pull the memory folder BEFORE reading it: this run's leftover-table upsert
+  // dedups against Memory.md, so a stale copy (another machine pushed since) could
+  // re-add a leftover that was already cleared. Warn-never-fail — a pull problem
+  // must not block the run; the end-of-run sync commits-then-pulls-then-pushes.
+  const pull = spawnSync('git', ['pull', '--no-rebase', '--quiet'], { cwd: __dir, encoding: 'utf8' });
+  console.log(pull.status === 0 ? '[BATCH] git pull ok' : `[BATCH] git pull skipped (continuing): ${(pull.stderr || '').trim() || 'non-zero exit'}`);
+
   console.log(`[BATCH] ${BATCH_ID} — profile: ${PROFILE} | ${BUS.length} BU(s) | ${MAX_PARALLEL}-wide | flags: ${PASS_FLAGS.join(' ') || '(none)'}`);
   const started = Date.now();
 
@@ -147,6 +155,10 @@ function runBU(bu) {
     // (Oak, 2026-07-16): a --test rejection is a real leftover, flagged 'test'.
     const lo = upsertLeftovers(results, mode === 'test' ? 'test' : 'live', __dir);
     if (lo && lo.added) console.log(`[BATCH] Leftover table: +${lo.added} row(s) -> ${lo.file}`);
+    // One rollup row per batch into Memory.md's Episode Index (the scannable
+    // "read first" timeline); per-BU detail stays in the execution log above.
+    const ep = appendEpisodeRow(results, { batchId: BATCH_ID, profile: PROFILE, mode, generated: summary.totals.generated }, __dir);
+    if (ep) console.log(`[BATCH] Episode Index: +1 row -> ${ep.file}`);
     syncMemoryFolder(`Batch ${BATCH_ID}: ${PROFILE} ${mode} memory sync`);
   }
 
