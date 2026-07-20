@@ -1,6 +1,7 @@
-name: PR2PO batch (manual, one BU)
+name: PR2PO batch (manual)
 
-# Manual, single-BU run of the PR2PO batch on a cloud runner.
+# Manual run of the PR2PO batch on a cloud runner. Leave `bu` blank to run all
+# BUs (throttled by max_parallel), or pass one code for a single-BU run.
 # Proves the full chain works on GitHub Actions: Windows runner -> materialize
 # config/tokens from secrets -> headless Chrome -> Odoo login -> Google OAuth
 # refresh -> pipeline. Env is UAT (lib/config.mjs auto-selects odooUrlGha on
@@ -20,9 +21,13 @@ on:
         default: supply
         required: true
       bu:
-        description: "Single BU code (e.g. PKPP)"
-        default: PKPP
-        required: true
+        description: "BU code (e.g. PKPP), or blank for ALL BUs"
+        default: ""
+        required: false
+      max_parallel:
+        description: "BUs to run in parallel (only when bu is blank)"
+        default: "4"
+        required: false
       mode:
         description: "How far to run"
         type: choice
@@ -85,6 +90,7 @@ jobs:
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           PROFILE: ${{ inputs.profile }}
           BU: ${{ inputs.bu }}
+          MAXP: ${{ inputs.max_parallel }}
           MODE: ${{ inputs.mode }}
         run: |
           # Translate the mode input into pipeline flags. Fail closed on anything
@@ -95,8 +101,10 @@ jobs:
             generate-live)     FLAGS="--generate" ;;
             *) echo "Unknown mode: $MODE" >&2; exit 1 ;;
           esac
-          echo "[MODE] $MODE -> $FLAGS"
-          node run-batch.mjs "$PROFILE" $FLAGS --headless --bu="$BU" --max-parallel=1
+          # Blank BU = all BUs (run-batch enumerates the config); one code = single BU.
+          if [ -n "$BU" ]; then BU_FLAG="--bu=$BU"; MAXP=1; fi
+          echo "[MODE] $MODE -> $FLAGS | bu=${BU:-ALL} | max-parallel=$MAXP"
+          node run-batch.mjs "$PROFILE" $FLAGS --headless $BU_FLAG --max-parallel="$MAXP"
 
       - name: Upload run summary (structured files only)
         # NOT runs/** — the raw per-BU .log is unfiltered child stderr, and
