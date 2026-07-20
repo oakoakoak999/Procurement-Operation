@@ -131,14 +131,18 @@ function runBU(bu) {
   console.log(`\n${md}`);
   console.log(`[BATCH] Written: ${join(RUN_DIR, 'summary.md')}`);
 
-  // Real runs (not dry/rehearse) append a per-BU block to the dated execution
-  // log, then one sync pushes the whole memory folder — after all pipeline
-  // processes have exited. Dry/rehearse runs are throwaway: no log, no push.
-  if (!PASS_FLAGS.includes('--test')) {
-    const mode = PASS_FLAGS.includes('--generate') ? 'live' : 'validate';
+  // Every batch appends one per-BU block to the dated execution log, then one
+  // sync pushes the whole memory folder — after all pipeline processes have
+  // exited. --test runs log too (flagged DRY-RUN, no PO fired), so a rehearsal
+  // leaves a git-readable trace of which PRs passed criteria (Oak, 2026-07-16:
+  // every execution logs, rehearsals included).
+  {
+    const mode = PASS_FLAGS.includes('--test') ? 'test'
+      : PASS_FLAGS.includes('--generate') ? 'live'
+      : 'validate';
     const logFile = appendExecutionLog(results, mode, __dir);
     console.log(`[BATCH] Execution log: ${logFile}`);
-    syncMemoryFolder(`Batch ${BATCH_ID}: ${PROFILE} memory sync`);
+    syncMemoryFolder(`Batch ${BATCH_ID}: ${PROFILE} ${mode} memory sync`);
   }
 
   if (failed.length > 0) process.exit(1);
