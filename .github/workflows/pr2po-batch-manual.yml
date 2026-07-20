@@ -8,7 +8,7 @@ name: PR2PO batch (manual)
 # GITHUB_ACTIONS); prod is not wired.
 #
 # The `mode` input controls how far the run goes:
-#   dry-run           --test              no generate click, no dedup-log write (side-effect-free)
+#   dry-run           --test              no generate click; appends passing rows flagged Run Mode=TEST (excluded from dedup)
 #   rehearse-generate --generate --test   exercises row selection/scoping, then Escapes — still 0 POs
 #   generate-live     --generate          FIRES REAL POs — clicks "Generate to PO" in Odoo
 # generate-live produces unconfirmed POs (the confirm-PO step is separate and

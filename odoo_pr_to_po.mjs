@@ -11,9 +11,12 @@
  * wrapped in withRetry: "Generate to PO" has no confirm dialog, so a
  * retry-driven re-click on the same batch would create duplicate real POs.
  *
- * --test (with --generate only): opens the Actions menu but stops before the
- * click, so a batch can be replayed against the same PRs without consuming
- * them into real POs.
+ * --test: a rehearsal. With --generate it opens the Actions menu but stops
+ * before the click (no real PO). Standalone it exports/validates as usual.
+ * Either way it STILL appends the passing rows to the log sheet, but stamps
+ * them Run Mode='TEST'; those rows are excluded from a live run's dedup key,
+ * so the PR list is visible in the sheet yet a later real run still processes
+ * the PR. (A live/validate run stamps 'LIVE' and dedups normally.)
  *
  * 2nd tier vendor: the reference sheet's "2nd tier Vendor" column holds
  * vendors a human has previously approved as a one-off (promoted via
@@ -375,6 +378,16 @@ async function appendToLog(exportPath) {
   // break (every row would key/group on "") — fail loudly instead.
   if (prNumIdx < 0) throw new Error(`Log tab "${GSHEET_LOG_TAB}" has no "Purchase Number" header column`);
 
+  // Run Mode column: marks how a row was produced. TEST = a --test rehearsal
+  // (no PO fired); the row is appended so the PR list shows in the sheet, but
+  // it is EXCLUDED from a live run's dedup key so that run still processes the
+  // PR. Auto-created on first use if the tab lacks the column (older sheets have
+  // no such cell → every existing row reads as a real/LIVE row).
+  let modeIdx = dstHeaders.findIndex(h => h?.toString().trim().toLowerCase() === 'run mode');
+  const modeColAdded = modeIdx < 0;
+  if (modeColAdded) modeIdx = dstHeaders.length;
+  const rowMode = TEST_MODE ? 'TEST' : 'LIVE';
+
   const normNum = v => {
     if (v === null || v === undefined || v === '') return '';
     const n = parseFloat(String(v).replace(/,/g, ''));
@@ -384,7 +397,13 @@ async function appendToLog(exportPath) {
 
   const existingKeys = new Set(dstRows.slice(1).map(r => {
     const pr = r[prNumIdx];
-    return pr ? `${normStr(pr)}|${normStr(r[productIdx])}|${normNum(r[qtyIdx])}|${normNum(r[unitPrIdx])}` : null;
+    if (!pr) return null;
+    // A rehearsal (TEST) row must not dedup a LIVE run out of its PO — a live
+    // run ignores TEST rows and reprocesses the PR. A TEST run, though, dedups
+    // against everything so re-running --test doesn't pile duplicate rows.
+    const rowIsTest = !modeColAdded && normStr(r[modeIdx]).toUpperCase() === 'TEST';
+    if (rowIsTest && !TEST_MODE) return null;
+    return `${normStr(pr)}|${normStr(r[productIdx])}|${normNum(r[qtyIdx])}|${normNum(r[unitPrIdx])}`;
   }).filter(Boolean));
 
   const srcPrIdx        = srcHeaders.indexOf('Purchase Number');
@@ -409,21 +428,56 @@ async function appendToLog(exportPath) {
       return;
     }
     existingKeys.add(rowKey);
-    const newRow = new Array(dstHeaders.length).fill('');
+    const newRow = new Array(Math.max(dstHeaders.length, modeIdx + 1)).fill('');
     newRow[dateIdx] = todayStr;
     srcHeaders.slice(1, 15).forEach((srcCol, i) => {
       const dstIdx = colMap[srcCol];
       if (dstIdx >= 0 && srcRow[i + 1] !== undefined) newRow[dstIdx] = srcRow[i + 1] ?? '';
     });
+    newRow[modeIdx] = rowMode;
     newRows.push(newRow);
   });
 
   log(`New rows after dedup: ${newRows.length} (${srcData.length - newRows.length} duplicates skipped)`);
-  return { newRows, headers: dstHeaders, skipped: srcData.length - newRows.length, exported: srcData.length };
+  return {
+    newRows, headers: dstHeaders,
+    skipped: srcData.length - newRows.length, exported: srcData.length,
+    modeMeta: { idx: modeIdx, added: modeColAdded },
+  };
+}
+
+// 0-based column index → A1 letters (0→A, 26→AA). Only used to place the
+// auto-created "Run Mode" header cell.
+function colLetter(idx) {
+  let s = '', n = idx + 1;
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+// Single append path for both the validated and unvalidated-fallback writes.
+// If this run introduced the "Run Mode" column, write its header first
+// (idempotent within a run: the flag is cleared so a 2nd append won't rewrite).
+async function appendLogRows(sheets, values, headers, modeMeta) {
+  if (modeMeta.added) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: GSHEET_LOG_ID,
+      range: `'${GSHEET_LOG_TAB}'!${colLetter(modeMeta.idx)}1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [['Run Mode']] },
+    });
+    modeMeta.added = false;
+  }
+  const appendRes = await sheets.spreadsheets.values.append({
+    spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
+    valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
+    requestBody: { values },
+  });
+  await tryFixFormatting(sheets, appendRes, headers);
+  return appendRes;
 }
 
 // ─── STEP 11: VALIDATE (VENDOR + MIN ORDER) THEN APPEND ─────────────────────
-async function validateAndAppend(newRows, headers) {
+async function validateAndAppend(newRows, headers, modeMeta) {
   if (newRows.length === 0) {
     return { appended: 0, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: false, passingPRNumbers: [], tier2Count: 0 };
   }
@@ -434,19 +488,11 @@ async function validateAndAppend(newRows, headers) {
     refRows = await fetchRefRows();
   } catch (e) {
     log(`WARNING: Could not fetch reference GSheet (${e.message}) — appending all rows without validation`);
-    // --test writes NOTHING to the dedup log: a dry-run row would poison the
-    // dedup key and make a later real run skip that PR (a silently missing PO).
-    if (!TEST_MODE) {
-      const sheets = await getSheetClient();
-      const appendRes = await sheets.spreadsheets.values.append({
-        spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
-        valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
-        requestBody: { values: newRows },
-      });
-      await tryFixFormatting(sheets, appendRes, headers);
-    } else {
-      log(`TEST: skipped log-sheet append of ${newRows.length} unvalidated row(s)`);
-    }
+    // TEST rows carry Run Mode='TEST' and are excluded from a live run's dedup
+    // key, so a rehearsal appends here without making a later real run skip the
+    // PR. Unvalidated rows still never auto-generate (passingPRNumbers empty).
+    const sheets = await getSheetClient();
+    await appendLogRows(sheets, newRows, headers, modeMeta);
     // passingPRNumbers stays empty — unvalidated rows must never be auto-generated
     return { appended: newRows.length, total: 0, vendor: 0, minOrder: 0, items: '', reasons: '', validationSkipped: true, passingPRNumbers: [], tier2Count: 0 };
   }
@@ -592,20 +638,16 @@ async function validateAndAppend(newRows, headers) {
     }
   }
 
-  // Append only passing rows — but never under --test (a dry-run row poisons the
-  // dedup key so a later real run skips that PR, silently dropping its PO).
-  if (passingRows.length > 0 && !TEST_MODE) {
+  // Append passing rows. Under --test they carry Run Mode='TEST' (set in
+  // appendToLog) and are excluded from a live run's dedup key, so the rehearsal
+  // shows in the sheet without making a later real run skip the PR.
+  if (passingRows.length > 0) {
     const sheets = await getSheetClient();
-    const appendRes = await sheets.spreadsheets.values.append({
-      spreadsheetId: GSHEET_LOG_ID, range: GSHEET_LOG_TAB,
-      valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: passingRows },
-    });
-    await tryFixFormatting(sheets, appendRes, headers);
+    await appendLogRows(sheets, passingRows, headers, modeMeta);
   }
 
   const totalRejected = rejectedItems.length;
-  log(`${TEST_MODE ? 'Would append (TEST — not written)' : 'Appended'} ${passingRows.length} row(s). Rejected ${totalRejected} PR(s).`);
+  log(`Appended ${passingRows.length} row(s)${TEST_MODE ? ' flagged TEST' : ''}. Rejected ${totalRejected} PR(s).`);
   if (totalRejected === 0) log('All PRs passed vendor and minimum order checks');
 
   if (tier2PassPRNumbers.length > 0) log(`Passed via 2nd tier vendor: ${tier2PassPRNumbers.join(', ')}`);
@@ -759,7 +801,7 @@ async function checkpointC(page) {
 async function checkpointD(exportPaths, runStats) {
   return withRetry('D: process + append', async () => {
     step('10/12 appendToLog');
-    const { newRows, headers, skipped, exported } = await appendToLog(exportPaths.filePath);
+    const { newRows, headers, skipped, exported, modeMeta } = await appendToLog(exportPaths.filePath);
     runStats.exportedRows = exported;
     runStats.skippedRows  = skipped;
 
@@ -769,7 +811,7 @@ async function checkpointD(exportPaths, runStats) {
     }
 
     step('11/12 validateAndAppend');
-    const rej = await validateAndAppend(newRows, headers);
+    const rej = await validateAndAppend(newRows, headers, modeMeta);
     runStats.appendedRows     = rej.appended;
     runStats.rejectedRows     = rej.total;
     runStats.rejectedVendor   = rej.vendor;
