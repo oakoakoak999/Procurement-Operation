@@ -629,6 +629,14 @@ async function stageUpload() {
     if (runStats.warnings)  console.log(`  Warnings: ${runStats.warnings}`);
     if (runStats.stoppedAt) console.log(`  Stopped At: ${runStats.stoppedAt}`);
     if (runStats.error)     console.log(`  Error: ${runStats.error}`);
+    // Persist the structured result so the batch runner can collect it. Only the
+    // batch path sets PODAILY_RESULT_FILE; a direct single-BU run leaves it unset
+    // and just prints the [SUMMARY] above. Mirrors PR2PO's PR2PO_RESULT_FILE so
+    // run-po-daily-batch.mjs reads results the same way run-batch.mjs does.
+    if (process.env.PODAILY_RESULT_FILE) {
+      try { writeFileSync(process.env.PODAILY_RESULT_FILE, JSON.stringify(runStats, null, 2)); }
+      catch (e) { console.error(`[RESULT] Could not write result file: ${e.message}`); }
+    }
     if (runStats.status === 'FAILED') process.exit(1);
   }
 })();
