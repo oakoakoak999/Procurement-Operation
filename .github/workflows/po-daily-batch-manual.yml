@@ -1,0 +1,104 @@
+name: PO-Daily batch (manual)
+
+# Manual run of the PO-Daily batch on a cloud runner. Leave `bu` blank to run
+# every BU that has a Drive order-folder configured (throttled by max_parallel),
+# or pass one code for a single-BU run. Leave `date` blank for today.
+#
+# Proves the PO-Daily chain works on GitHub Actions: Windows runner -> materialize
+# config/tokens from secrets -> headless Chrome -> Odoo login (UAT via odooUrlGha,
+# auto-selected on GITHUB_ACTIONS) -> print the day's POs -> split per-vendor ->
+# upload to the Google Shared Drive.
+#
+# NO dry-run: PO-daily always takes real actions. The Drive upload de-dups
+# against files already there, so a re-run skips existing names rather than
+# duplicating — that is the safety net, not a --test mode. Use deliberately.
+on:
+  workflow_dispatch:
+    inputs:
+      bu:
+        description: "BU code (e.g. PSV), or blank for ALL order-folder BUs"
+        default: ""
+        required: false
+      date:
+        description: "Target date YYYY-MM-DD, or blank for today"
+        default: ""
+        required: false
+      max_parallel:
+        description: "BUs to run in parallel (only when bu is blank)"
+        default: "2"
+        required: false
+
+permissions:
+  contents: write   # runner must push the agent-memory folder (execution log + Episode Index) back
+
+jobs:
+  run:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chrome for Playwright
+        run: npx playwright install chrome
+
+      - name: Materialize config + tokens from secrets
+        shell: bash
+        env:
+          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
+          GSHEETS_TOKEN_JSON: ${{ secrets.GSHEETS_TOKEN_JSON }}
+          GDRIVE_PO_TOKEN_JSON: ${{ secrets.GDRIVE_PO_TOKEN_JSON }}
+        run: |
+          # Write each secret to its file via env->printf (no interpretation, no echo).
+          printf '%s' "$CONFIG_JSON"          > config.json
+          printf '%s' "$GSHEETS_TOKEN_JSON"   > .gsheets-token.json
+          printf '%s' "$GDRIVE_PO_TOKEN_JSON" > .gdrive-po-token.json
+          # Validate each is well-formed JSON WITHOUT printing contents
+          # (jq stderr can echo a fragment of a mangled secret -> silence it).
+          for f in config.json .gsheets-token.json .gdrive-po-token.json; do
+            if jq empty "$f" 2>/dev/null; then echo "$f: ok"; else echo "$f: INVALID JSON"; exit 1; fi
+          done
+
+      - name: Run PO-Daily batch (headless)
+        shell: bash
+        env:
+          # Runners are UTC; mint RUN_IDs and execution-log timestamps in
+          # Bangkok so they match the +07 heading the log writer emits.
+          TZ: Asia/Bangkok
+          ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
+          ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
+          GDRIVE_CLIENT_ID: ${{ vars.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          # Cloudflare Access service token — opens the gha door from the cloud runner.
+          # No-op locally (cfAccessHeaders() returns {} when these are unset).
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          BU: ${{ inputs.bu }}
+          DATE: ${{ inputs.date }}
+          MAXP: ${{ inputs.max_parallel }}
+        run: |
+          # Blank BU = all order-folder BUs (run-po-daily-batch enumerates them);
+          # one code = single BU. Blank date = today (the pipeline defaults it).
+          if [ -n "$BU" ]; then BU_FLAG="--bu=$BU"; MAXP=1; fi
+          if [ -n "$DATE" ]; then DATE_FLAG="--date $DATE"; fi
+          echo "[RUN] bu=${BU:-ALL} | date=${DATE:-today} | max-parallel=$MAXP"
+          node run-po-daily-batch.mjs $BU_FLAG $DATE_FLAG --headless --max-parallel="$MAXP"
+
+      - name: Upload run summary (structured files only)
+        # NOT runs/** — the raw per-BU .log is unfiltered child stderr, and
+        # artifact contents are stored UNMASKED (GitHub only masks the live log
+        # view). Upload only the structured files, built from named fields.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: po-daily-summary
+          path: |
+            runs/**/summary.md
+            runs/**/summary.json
+            runs/**/*.result.json
+          if-no-files-found: warn
