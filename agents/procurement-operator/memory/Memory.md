@@ -8,11 +8,13 @@
 
 ## Pending Leftover PRs
 
-> PRs rejected by PR2PO (vendor mismatch or minimum order) that have NOT yet been approved or rejected via `odoo_pr_action.mjs`. Read this table at the start of every invocation, regardless of what was asked, and report it if non-empty — before doing anything else. A row is added when PR2PO rejects a PR; removed when `odoo_pr_action.mjs` executes a real (non `--test`) approve or reject for that PR number. If a PR is acted on outside these scripts (manually in Odoo), this table will go stale — no automatic drift detection.
+> PRs rejected by PR2PO (vendor mismatch or minimum order) that have NOT yet been approved or rejected via `odoo_pr_action.mjs`. Read this table at the start of every invocation, regardless of what was asked, and report it if non-empty — before doing anything else. Rows are written automatically by the batch runner (`lib/leftover-table.mjs`) — one upsert per rejected PR, keyed by PR number (earliest First Seen wins, never overwritten). A row is removed when `odoo_pr_action.mjs` executes a real (non `--test`) approve or reject for that PR number. No automatic removal otherwise: the writer never deletes rows, so a PR fixed manually in Odoo lingers here until a human clears it (a BU with an empty export that day is indistinguishable from "resolved", so silent deletion would be unsafe).
+>
+> **Mode column:** `live` = surfaced by a real run (validate/generate). `test` = surfaced by a `--test` dry-run — NO PO fired and NO real action taken, but it is still a genuine leftover awaiting a human, just flagged as found during a rehearsal.
 
-| PR Number | Profile | BU | Reason | First Seen | RUN_ID |
-|-----------|---------|-----|--------|-----------|--------|
-| 57PR26060835 | supply | PSUV | vendor mismatch — item [0000001812] expected (0000000915) TERUMO MEDICAL SUPPLY, got (0000000912) | 2026-07-01 | 20260701-1605 |
+| PR Number | Profile | BU | Reason | First Seen | RUN_ID | Mode |
+|-----------|---------|-----|--------|-----------|--------|------|
+| 57PR26060835 | supply | PSUV | vendor mismatch — item [0000001812] expected (0000000915) TERUMO MEDICAL SUPPLY, got (0000000912) | 2026-07-01 | 20260701-1605 | live |
 
 ---
 

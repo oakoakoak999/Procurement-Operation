@@ -27,6 +27,7 @@ import { BU_ODOO_PREFIX } from './lib/config.mjs';
 import { makeRunId } from './lib/util.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
 import { appendExecutionLog } from './lib/execution-log.mjs';
+import { upsertLeftovers } from './lib/leftover-table.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +143,10 @@ function runBU(bu) {
       : 'validate';
     const logFile = appendExecutionLog(results, mode, __dir);
     console.log(`[BATCH] Execution log: ${logFile}`);
+    // Upsert rejected PRs into Memory.md's leftover state. Rehearsals count
+    // (Oak, 2026-07-16): a --test rejection is a real leftover, flagged 'test'.
+    const lo = upsertLeftovers(results, mode === 'test' ? 'test' : 'live', __dir);
+    if (lo && lo.added) console.log(`[BATCH] Leftover table: +${lo.added} row(s) -> ${lo.file}`);
     syncMemoryFolder(`Batch ${BATCH_ID}: ${PROFILE} ${mode} memory sync`);
   }
 
