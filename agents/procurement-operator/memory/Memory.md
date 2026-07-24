@@ -35,4 +35,5 @@
 | 2026-07-01 | 20260701-1605 | PR2PO supply PSUV | SUCCESS | Exported 9 / Appended 6 / Rejected 1 (vendor) | PR 57PR26060835 — vendor mismatch |
 | 2026-07-20 | 20260720-0657 | PR2PO medicine batch | SUCCESS | 18 BU · 4 active · 0 pass · 6 reject · 0 PO | --test rehearsal (no PO) |
 | 2026-07-20 | 20260720-0744 | PO-Daily batch 2026-05-05 | SUCCESS | 1 BU · 1 with POs · 4 printed · 0 uploaded · 268 dup-skip | print + upload |
+| 2026-07-24 | 20260724-1118 | PO-Daily PSNK 2026-07-17 | SUCCESS | Printed 1 / Split 30 / Uploaded 30 / Skipped 0 | PRINT stage retried 2× (waitForResponse closed/timeout), succeeded on attempt 3/3 |
 
