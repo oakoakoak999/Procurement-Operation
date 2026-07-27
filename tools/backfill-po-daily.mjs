@@ -16,12 +16,16 @@
  * Usage:
  *   node tools/backfill-po-daily.mjs --bu PSV --from 2026-01-01 --to 2026-06-30
  *                                    [--headless] [--clean] [--dry-run]
+ *                                    [--max-parallel 2]
  *
  *   --clean    delete that date's printed page PDFs + split dir after a
  *              successful upload. Off by default — a 6-month PSV backfill is
  *              several GB in Downloads, so turn this on unless you want the
  *              local copies.
  *   --dry-run  print the date list and exit. Nothing is launched.
+ *   --max-parallel  dates in flight at once (default 2, same as the daily
+ *              batch runner). See the lane comment below for why this helps
+ *              and why it does not simply multiply the load on Drive.
  *
  * State: runs/backfill-<BU>-<from>-<to>.json  (delete it to force a full redo)
  */
@@ -43,6 +47,22 @@ const TO       = arg('--to');
 const HEADLESS = has('--headless');
 const CLEAN    = has('--clean');
 const DRY      = has('--dry-run');
+const LANES    = Math.max(1, Number(arg('--max-parallel', 2)) || 2);
+
+// A date alternates between two stages that contend for nothing: printing is
+// Odoo- and browser-bound with the network to Drive completely idle, uploading
+// is Drive-bound with the browser already closed. Run one date at a time and
+// each stage waits out the other; overlap two and the idle half of one date is
+// filled by the busy half of the next.
+//
+// Note this is NOT "twice the load on Drive". The per-date folder pool is
+// divided by the lane count below, so total in-flight requests stay at the
+// figure already proven safe (4 folders x 6 files) — the lanes keep that budget
+// continuously busy instead of letting it drop to zero during print and split.
+// An explicit PO_FOLDER_CONCURRENCY in the environment is left alone; that is
+// the override for someone who has measured their own link.
+const FOLDER_BUDGET = Number(process.env.PO_FOLDER_CONCURRENCY) || 4;
+const CHILD_FOLDER_CONCURRENCY = String(Math.max(1, Math.floor(FOLDER_BUDGET / LANES)));
 
 if (!BU || !FROM || !TO) {
   console.error('usage: node tools/backfill-po-daily.mjs --bu PSV --from 2026-01-01 --to 2026-06-30 [--headless] [--clean] [--dry-run]');
@@ -91,7 +111,11 @@ function runDate(date) {
     const args = ['po-daily-pipeline.mjs', '--bu', BU, '--date', date, ...(HEADLESS ? ['--headless'] : [])];
     const child = spawn(process.execPath, args, {
       cwd: ROOT,
-      env: { ...process.env, PODAILY_RESULT_FILE: resultFile },
+      env: {
+        ...process.env,
+        PODAILY_RESULT_FILE: resultFile,
+        PO_FOLDER_CONCURRENCY: CHILD_FOLDER_CONCURRENCY,
+      },
     });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
@@ -117,42 +141,55 @@ function cleanLocal(date) {
 (async () => {
   const todo = DATES.filter(d => !isDone(d));
   console.log(`[BACKFILL] ${BU} | ${FROM} → ${TO} | ${DATES.length} date(s), ${todo.length} to run, ${DATES.length - todo.length} already done`);
-  console.log(`[BACKFILL] state: ${STATE}`);
+  console.log(`[BACKFILL] state: ${STATE} | ${LANES} date(s) in flight, ${CHILD_FOLDER_CONCURRENCY} folder(s) each`);
   if (!todo.length) { console.log('[BACKFILL] nothing to do'); return; }
 
   const started = Date.now();
-  let n = 0;
-  for (const date of todo) {
-    n++;
-    const t0 = Date.now();
-    process.stdout.write(`[BACKFILL] (${n}/${todo.length}) ${date} … `);
-    const r = await runDate(date);
-    const mins = ((Date.now() - t0) / 60000).toFixed(1);
+  let next = 0;   // index of the next date to claim
+  let done = 0;   // dates finished, for progress and ETA
 
-    state.dates[date] = {
-      status: r.status,
-      printed: r.printed ?? null,
-      split: r.split ?? null,
-      uploaded: r.uploaded ?? null,
-      replaced: r.replaced ?? null,
-      skipped: r.skipped ?? null,
-      error: r.error ?? null,
-      minutes: Number(mins),
-      at: new Date().toISOString(),
-    };
-    save();
+  // Each lane claims a date, runs it start to finish, then claims the next.
+  // Claiming by index rather than slicing the list up front matters: dates cost
+  // between half a minute and three minutes, so a fixed split would leave one
+  // lane idle for a long tail.
+  const lane = async () => {
+    while (next < todo.length) {
+      const date = todo[next++];
+      const t0 = Date.now();
+      const r = await runDate(date);
+      const mins = ((Date.now() - t0) / 60000).toFixed(1);
 
-    console.log(`${r.status}${r.error ? ` — ${r.error}` : ''} | split=${r.split ?? '-'} up=${r.uploaded ?? '-'} repl=${r.replaced ?? '-'} skip=${r.skipped ?? '-'} (${mins}m)`);
+      state.dates[date] = {
+        status: r.status,
+        printed: r.printed ?? null,
+        split: r.split ?? null,
+        uploaded: r.uploaded ?? null,
+        replaced: r.replaced ?? null,
+        skipped: r.skipped ?? null,
+        error: r.error ?? null,
+        minutes: Number(mins),
+        at: new Date().toISOString(),
+      };
+      save();
 
-    if (CLEAN && ['SUCCESS', 'WARN'].includes(r.status)) cleanLocal(date);
+      done++;
+      // One self-contained line per date. Lanes finish interleaved, so the
+      // old write-the-date-then-the-result-later pattern would splice two
+      // dates into one unreadable line.
+      console.log(`[BACKFILL] (${done}/${todo.length}) ${date} ${r.status}${r.error ? ` — ${r.error}` : ''} | split=${r.split ?? '-'} up=${r.uploaded ?? '-'} repl=${r.replaced ?? '-'} skip=${r.skipped ?? '-'} (${mins}m)`);
 
-    // Running ETA — the only honest way to size a job whose per-date cost
-    // varies by an order of magnitude between a weekend and a month-end.
-    const elapsed = (Date.now() - started) / 60000;
-    const eta = (elapsed / n) * (todo.length - n);
-    if (n % 5 === 0 || n === todo.length)
-      console.log(`[BACKFILL] ${n}/${todo.length} done, ${elapsed.toFixed(0)}m elapsed, ~${eta.toFixed(0)}m remaining`);
-  }
+      if (CLEAN && ['SUCCESS', 'WARN'].includes(r.status)) cleanLocal(date);
+
+      // Running ETA — the only honest way to size a job whose per-date cost
+      // varies by an order of magnitude between a weekend and a month-end.
+      const elapsed = (Date.now() - started) / 60000;
+      const eta = (elapsed / done) * (todo.length - done);
+      if (done % 5 === 0 || done === todo.length)
+        console.log(`[BACKFILL] ${done}/${todo.length} done, ${elapsed.toFixed(0)}m elapsed, ~${eta.toFixed(0)}m remaining`);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(LANES, todo.length) }, lane));
 
   const all  = Object.entries(state.dates);
   const sum  = k => all.reduce((a, [, v]) => a + (v[k] || 0), 0);
