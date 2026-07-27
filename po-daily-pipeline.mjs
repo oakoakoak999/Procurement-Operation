@@ -50,6 +50,9 @@ loadEnv(join(__dir, '.env'));
 const HEADLESS       = process.argv.includes('--headless');
 const SKIP_PRINT     = process.argv.includes('--skip-print');
 const SKIP_SPLIT     = process.argv.includes('--skip-split');
+// Escape hatch for A/B-ing a date against the pre-filter behaviour. The filter
+// is on by default — printing unsent POs is the bug this closes.
+const NO_VENDOR_FILTER = process.argv.includes('--no-vendor-filter');
 const _buIdx         = process.argv.indexOf('--bu');
 const TARGET_BU_CODE = _buIdx !== -1 ? process.argv[_buIdx + 1] : 'PSV';
 const DOWNLOADS_DIR  = join(homedir(), 'Downloads');
@@ -211,6 +214,49 @@ async function stagePrint() {
     }
     await page.click('.o_searchview_dropdown_toggler');
     await page.waitForTimeout(1500);
+
+    // ── Filter: PO Send to Vendor = Completed ────────────────────────────────
+    // Odoo's domain editor derives BOTH the operator and the value control from
+    // the selected field's type, and re-renders them when the field changes, so
+    // neither is left to its default: the dialog opens on "is in" for the
+    // initial field, and the value opens on "In RFQ" — not what we want. Option
+    // values are JSON-encoded by the editor, hence the embedded quotes.
+    // Selectors verified live 2026-07-27 via tools/probe-po-filter.mjs.
+    if (!NO_VENDOR_FILTER) {
+      log('PRINT', 'Applying filter: PO Send to Vendor = Completed...');
+      await page.click('.o_searchview_dropdown_toggler');
+      await page.waitForTimeout(600);
+      await page.getByRole('menuitem', { name: 'Add Custom Filter' }).click();
+
+      // The dialog opens on an arbitrary default field, so bind to the field
+      // selector's own class rather than that field's label — a Studio reorder
+      // must not silently retarget this click.
+      const dlg = page.locator('.modal').last();
+      await dlg.locator('.o_model_field_selector').first().waitFor({ timeout: 15000 });
+      await dlg.locator('.o_model_field_selector').first().click();
+
+      const popoverInput = page.locator('.o_model_field_selector_popover input').first();
+      await popoverInput.waitFor({ timeout: 15000 });
+      await popoverInput.fill('PO Send to Vendor');
+      await page.getByRole('button', { name: 'PO Send to Vendor' }).click();
+
+      // A selection field renders a second <select> for the value. Waiting for
+      // it is how we know the field change finished re-rendering the row —
+      // more reliable than a blind timeout.
+      await dlg.locator('select').nth(1).waitFor({ timeout: 15000 });
+      const selects = dlg.locator('select');
+      await selects.nth(0).selectOption('"="');
+      await selects.nth(1).selectOption('"completed"');
+
+      await dlg.getByRole('button', { name: 'Add', exact: true }).click();
+      await page.waitForTimeout(2000);
+
+      // Fail loud: a silently-unapplied filter would print the unfiltered set.
+      const facet = page.locator('.o_searchview_facet').filter({ hasText: 'PO Send to Vendor' });
+      if (await facet.count() === 0)
+        throw new Error('Vendor-send filter did not apply — facet missing after Add');
+      log('PRINT', 'Filter applied: PO Send to Vendor = Completed');
+    }
 
     log('PRINT', `Expanding ${TARGET_DATE}...`);
 
