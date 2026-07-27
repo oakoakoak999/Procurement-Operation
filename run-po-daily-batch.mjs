@@ -122,20 +122,23 @@ function runBU(bu) {
       noPO: results.filter(r => r.status === 'WARN').length,
       printed:  results.reduce((n, r) => n + (r.printed  || 0), 0),
       uploaded: results.reduce((n, r) => n + (r.uploaded || 0), 0),
+      replaced: results.reduce((n, r) => n + (r.replaced || 0), 0),
       skipped:  results.reduce((n, r) => n + (r.skipped  || 0), 0),
     },
     results,
   };
   writeFileSync(join(RUN_DIR, 'summary.json'), JSON.stringify(summary, null, 2));
 
-  const mdRow = r => `| ${r.bu} | ${r.status} | ${r.printed ?? '-'} | ${r.split ?? '-'} | ${r.uploaded ?? '-'} | ${r.skipped ?? '-'} | ${r.error || ''} |`;
+  const mdRow = r => `| ${r.bu} | ${r.status} | ${r.printed ?? '-'} | ${r.split ?? '-'} | ${r.uploaded ?? '-'} | ${r.replaced ?? '-'} | ${r.skipped ?? '-'} | ${r.error || ''} |`;
   const md = [
     `# Batch ${BATCH_ID} — PO-Daily (${PASS_ARGS.join(' ') || 'today, headed'})`,
     '',
-    `${results.length} BU(s) in ${minutes} min — ${failed.length} failed, ${summary.totals.noPO} with no POs, ${summary.totals.printed} printed, ${summary.totals.uploaded} uploaded, ${summary.totals.skipped} dup-skipped`,
+    // "replaced" is the number worth reading here: it means a PO was re-issued
+    // under the same number and Drive now carries the corrected version.
+    `${results.length} BU(s) in ${minutes} min — ${failed.length} failed, ${summary.totals.noPO} with no POs, ${summary.totals.printed} printed, ${summary.totals.uploaded} uploaded, ${summary.totals.replaced} replaced, ${summary.totals.skipped} unchanged`,
     '',
-    '| BU | Status | Printed | Split | Uploaded | Skipped | Error |',
-    '|---|---|---|---|---|---|---|',
+    '| BU | Status | Printed | Split | Uploaded | Replaced | Skipped | Error |',
+    '|---|---|---|---|---|---|---|---|',
     ...results.map(mdRow),
     '',
   ].join('\n');

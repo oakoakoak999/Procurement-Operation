@@ -36,6 +36,7 @@ import { fileURLToPath } from 'url';
 import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
+import { createHash } from 'crypto';
 import { ODOO_URL, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
 import { loadEnv, log, makeRunId, cfAccessHeaders } from './lib/util.mjs';
 
@@ -532,22 +533,57 @@ async function findOrCreateFolder(drive, name, parentId) {
   return f.data.id;
 }
 
+// ─── Content identity ─────────────────────────────────────────────────────────
+// Dedup used to match on filename alone, so a PO corrected and re-issued under
+// the same number was skipped forever and the fix never reached Drive.
+//
+// The identity is the *extracted text*, never the bytes: two renders of an
+// unchanged PO produce PDFs that differ by a few bytes (object-stream
+// compression variance) while their text is bit-identical. Verified 2026-07-27
+// on 25 PSV POs — local renders vs Drive copies rendered six weeks earlier:
+// 25/25 identical text, byte sizes drifting +/-3. That also rules out `size`
+// as a cheap tiebreaker; it would flag every unchanged file as modified.
+//
+// Whitespace is normalized because extraction spacing is not a stable property
+// of the document. tools/probe-pdf-stability.mjs exercises this exact function.
+const HASH_KEY = 'poContentHash';
+
+async function contentHash(buf) {
+  const { text } = await pdfParse(buf);
+  return createHash('sha256').update(text.replace(/\s+/g, ' ').trim()).digest('hex');
+}
+
 async function getExistingFiles(drive, folderId) {
-  const existing = new Set();
+  const existing = new Map();
   let pageToken = null;
   do {
     const res = await drive.files.list({
       q: `'${folderId}' in parents and trashed=false`,
-      fields: 'nextPageToken, files(name)',
+      // appProperties rides along on the listing already being made — carrying
+      // the hash here costs no extra API call.
+      fields: 'nextPageToken, files(id, name, appProperties)',
       supportsAllDrives: true,
       includeItemsFromAllDrives: true,
       pageSize: 1000,
       ...(pageToken ? { pageToken } : {}),
     });
-    for (const f of res.data.files) existing.add(f.name);
+    for (const f of res.data.files)
+      existing.set(f.name, { id: f.id, hash: f.appProperties?.[HASH_KEY] ?? null });
     pageToken = res.data.nextPageToken;
   } while (pageToken);
   return existing;
+}
+
+// A file predating content hashing carries no appProperties, so its identity
+// has to be recovered by downloading and extracting it. Files uploaded under
+// the year/month/day layout are all born with a hash, so this path only fires
+// for legacy folders and it heals them as it goes.
+async function remoteHash(drive, fileId) {
+  const res = await drive.files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'arraybuffer' },
+  );
+  return contentHash(Buffer.from(res.data));
 }
 
 async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
@@ -557,20 +593,64 @@ async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
   if (!pdfs.length) return;
 
   const existingOnDrive = await getExistingFiles(drive, driveFolderId);
+  const progress = () => process.stdout.write(
+    `\r[UPLOAD] ${counters.uploaded} uploaded, ${counters.replaced} replaced, ${counters.skipped} skipped...`);
 
   for (const pdf of pdfs) {
-    if (existingOnDrive.has(pdf)) {
+    const localPath = join(localDir, pdf);
+    const remote    = existingOnDrive.get(pdf);
+    const localHash = await contentHash(readFileSync(localPath));
+
+    if (!remote) {
+      await drive.files.create({
+        requestBody: { name: pdf, parents: [driveFolderId], appProperties: { [HASH_KEY]: localHash } },
+        media: { mimeType: 'application/pdf', body: createReadStream(localPath) },
+        fields: 'id',
+        supportsAllDrives: true,
+      });
+      counters.uploaded++;
+      progress();
+      continue;
+    }
+
+    let knownHash = remote.hash;
+    if (!knownHash) {
+      try {
+        knownHash = await remoteHash(drive, remote.id);
+      } catch (e) {
+        // Can't establish what's up there — leave it alone rather than
+        // overwrite it on a guess.
+        logWarning('UPLOAD', `${pdf}: could not read existing Drive copy (${e.message}) — skipped`);
+        counters.skipped++;
+        continue;
+      }
+    }
+
+    if (knownHash === localHash) {
+      // Stamp the hash on legacy files so the download above happens once.
+      if (!remote.hash) {
+        await drive.files.update({
+          fileId: remote.id, requestBody: { appProperties: { [HASH_KEY]: localHash } },
+          fields: 'id', supportsAllDrives: true,
+        });
+      }
       counters.skipped++;
       continue;
     }
-    await drive.files.create({
-      requestBody: { name: pdf, parents: [driveFolderId] },
-      media: { mimeType: 'application/pdf', body: createReadStream(join(localDir, pdf)) },
+
+    // Content changed: update in place. Replacing the same file ID keeps every
+    // existing share link working and files the old version in Drive's
+    // revision history — a delete-then-create would break both.
+    await drive.files.update({
+      fileId: remote.id,
+      requestBody: { appProperties: { [HASH_KEY]: localHash } },
+      media: { mimeType: 'application/pdf', body: createReadStream(localPath) },
       fields: 'id',
       supportsAllDrives: true,
     });
-    counters.uploaded++;
-    process.stdout.write(`\r[UPLOAD] ${counters.uploaded} uploaded, ${counters.skipped} skipped...`);
+    counters.replaced++;
+    log('UPLOAD', `Replaced changed PO: ${pdf}`);
+    progress();
   }
 }
 
@@ -578,29 +658,39 @@ async function stageUpload() {
   const auth  = await authorizeGDrive();
   const drive = google.drive({ version: 'v3', auth });
 
+  // year/month/day, all derived from the *target* date rather than today, so a
+  // backfill run files its POs under the day they belong to. Zero-padded
+  // numeric so the folders sort correctly in Drive's own listing.
+  const pad2       = n => String(n).padStart(2, '0');
   const year       = String(_d.getFullYear());
-  const yearFolder = await findOrCreateFolder(drive, year, ORDER_FOLDER);
-  log('UPLOAD', `Year folder: ${year} (${yearFolder})`);
+  const month      = pad2(_d.getMonth() + 1);
+  const day        = pad2(_d.getDate());
+
+  const yearFolder  = await findOrCreateFolder(drive, year,  ORDER_FOLDER);
+  const monthFolder = await findOrCreateFolder(drive, month, yearFolder);
+  const dayFolder   = await findOrCreateFolder(drive, day,   monthFolder);
+  const datePath    = `${year}/${month}/${day}`;
+  log('UPLOAD', `Date folder: ${datePath} (${dayFolder})`);
 
   const entries    = readdirSync(SPLIT_DIR, { withFileTypes: true });
   const vendorDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
   const rootPdfs   = entries.filter(e => e.isFile() && extname(e.name).toLowerCase() === '.pdf');
 
-  log('UPLOAD', `${vendorDirs.length} vendor folder(s) → Drive:${ORDER_FOLDER}/${year}`);
-  const counters = { uploaded: 0, skipped: 0 };
+  log('UPLOAD', `${vendorDirs.length} vendor folder(s) → Drive:${ORDER_FOLDER}/${datePath}`);
+  const counters = { uploaded: 0, replaced: 0, skipped: 0 };
 
   for (const vendorName of vendorDirs) {
-    const vendorDriveId = await findOrCreateFolder(drive, vendorName, yearFolder);
+    const vendorDriveId = await findOrCreateFolder(drive, vendorName, dayFolder);
     await uploadDirToDrive(drive, join(SPLIT_DIR, vendorName), vendorDriveId, counters);
   }
 
-  // Vendor-less PDFs in the split root: upload to the year folder so nothing is lost
+  // Vendor-less PDFs in the split root: upload to the day folder so nothing is lost
   if (rootPdfs.length > 0) {
-    logWarning('UPLOAD', `${rootPdfs.length} PDF(s) without vendor folder — uploading to year folder root`);
-    await uploadDirToDrive(drive, SPLIT_DIR, yearFolder, counters);
+    logWarning('UPLOAD', `${rootPdfs.length} PDF(s) without vendor folder — uploading to day folder root`);
+    await uploadDirToDrive(drive, SPLIT_DIR, dayFolder, counters);
   }
 
-  console.log(`\n[UPLOAD] Done — ${counters.uploaded} uploaded, ${counters.skipped} already existed (skipped)`);
+  console.log(`\n[UPLOAD] Done — ${counters.uploaded} uploaded, ${counters.replaced} replaced, ${counters.skipped} unchanged (skipped)`);
   return counters;
 }
 
@@ -615,7 +705,7 @@ async function stageUpload() {
 
   const runStats = {
     runId: RUN_ID, bu: TARGET_BU_CODE, date: TARGET_DATE, status: 'SUCCESS',
-    printed: null, split: null, uploaded: null, skipped: null,
+    printed: null, split: null, uploaded: null, replaced: null, skipped: null,
     warnings: null, stoppedAt: null, error: null,
   };
   let stage = 'PRINT';
@@ -655,6 +745,7 @@ async function stageUpload() {
     stage = 'UPLOAD';
     const uploadCounters = await stageUpload();
     runStats.uploaded = uploadCounters.uploaded;
+    runStats.replaced = uploadCounters.replaced;
     runStats.skipped  = uploadCounters.skipped;
 
     console.log('\n✅ Pipeline complete\n');
@@ -666,7 +757,7 @@ async function stageUpload() {
   } finally {
     runStats.warnings = WARNINGS.length ? WARNINGS.join('; ') : null;
     console.log(`\n[SUMMARY] RUN_ID: ${RUN_ID} — ${runStats.status} | BU: ${runStats.bu} | Date: ${runStats.date}`);
-    console.log(`  Printed: ${runStats.printed ?? '-'} | Split: ${runStats.split ?? '-'} | Uploaded: ${runStats.uploaded ?? '-'} | Skipped: ${runStats.skipped ?? '-'}`);
+    console.log(`  Printed: ${runStats.printed ?? '-'} | Split: ${runStats.split ?? '-'} | Uploaded: ${runStats.uploaded ?? '-'} | Replaced: ${runStats.replaced ?? '-'} | Skipped: ${runStats.skipped ?? '-'}`);
     if (runStats.warnings)  console.log(`  Warnings: ${runStats.warnings}`);
     if (runStats.stoppedAt) console.log(`  Stopped At: ${runStats.stoppedAt}`);
     if (runStats.error)     console.log(`  Error: ${runStats.error}`);
