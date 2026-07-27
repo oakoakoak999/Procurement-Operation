@@ -24,8 +24,9 @@
  *              local copies.
  *   --dry-run  print the date list and exit. Nothing is launched.
  *   --max-parallel  dates in flight at once (default 2, same as the daily
- *              batch runner). See the lane comment below for why this helps
- *              and why it does not simply multiply the load on Drive.
+ *              batch runner). Measured: the bottleneck is the per-date print
+ *              stage, not Drive, so overlapping dates is the lever that works.
+ *              Each lane gets its own folder pool — see the comment below.
  *
  * State: runs/backfill-<BU>-<from>-<to>.json  (delete it to force a full redo)
  */
@@ -55,14 +56,20 @@ const LANES    = Math.max(1, Number(arg('--max-parallel', 2)) || 2);
 // each stage waits out the other; overlap two and the idle half of one date is
 // filled by the busy half of the next.
 //
-// Note this is NOT "twice the load on Drive". The per-date folder pool is
-// divided by the lane count below, so total in-flight requests stay at the
-// figure already proven safe (4 folders x 6 files) — the lanes keep that budget
-// continuously busy instead of letting it drop to zero during print and split.
-// An explicit PO_FOLDER_CONCURRENCY in the environment is left alone; that is
-// the override for someone who has measured their own link.
-const FOLDER_BUDGET = Number(process.env.PO_FOLDER_CONCURRENCY) || 4;
-const CHILD_FOLDER_CONCURRENCY = String(Math.max(1, Math.floor(FOLDER_BUDGET / LANES)));
+// Each lane gets a FIXED folder pool rather than a share of one global budget.
+// The budget-splitting version was built on the assumption that Drive's rate
+// limiter was the binding constraint, and measurement killed that assumption:
+// 24 vs 36 requests in flight ran at the same speed with zero 429s, so the
+// bottleneck is the per-date print stage (browser launch, login, nav, filters,
+// Odoo render — roughly 40s that no amount of upload concurrency touches).
+//
+// Splitting a budget also degraded as lanes rose: at 3 lanes it produced one
+// folder per date, which silently reverts the parallel-folder optimisation and
+// reinstates two serial round trips per vendor folder (~23% of upload time).
+// A fixed 2 keeps every lane above that cliff; peak in-flight is
+// LANES x 2 x UPLOAD_CONCURRENCY, i.e. 24 at 2 lanes and 36 at 3 — both
+// measured clean.
+const CHILD_FOLDER_CONCURRENCY = String(Number(process.env.PO_FOLDER_CONCURRENCY) || 2);
 
 if (!BU || !FROM || !TO) {
   console.error('usage: node tools/backfill-po-daily.mjs --bu PSV --from 2026-01-01 --to 2026-06-30 [--headless] [--clean] [--dry-run]');
