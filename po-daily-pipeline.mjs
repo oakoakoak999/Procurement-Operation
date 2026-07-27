@@ -213,46 +213,102 @@ async function stagePrint() {
     await page.click('.o_searchview_dropdown_toggler');
     await page.waitForTimeout(1500);
 
-    // ── Filter: PO Send to Vendor = Completed ────────────────────────────────
-    // Odoo's domain editor derives BOTH the operator and the value control from
-    // the selected field's type, and re-renders them when the field changes, so
-    // neither is left to its default: the dialog opens on "is in" for the
-    // initial field, and the value opens on "In RFQ" — not what we want. Option
+    // ── Filters ──────────────────────────────────────────────────────────────
+    // Two custom filters, applied as two separate dialogs:
+    //
+    //   (PO Send to Vendor = Completed  OR  = Resend PO)
+    //   AND  Doc Approve Status = Approved
+    //
+    // Odoo combines rules *within* a dialog using its any/all connector, and
+    // ANDs separate facets together — which is exactly the shape wanted here.
+    // A single dialog could not express it: the send-status pair needs OR while
+    // the approve status must AND against them.
+    //
+    // Nothing in this dialog is left to its opening state. The operator selects
+    // default to "is in", not "="; the value control opens on "In RFQ", not
+    // Completed; and Odoo re-renders both whenever the field changes. Option
     // values are JSON-encoded by the editor, hence the embedded quotes.
-    // Selectors verified live 2026-07-27 via tools/probe-po-filter.mjs.
-    log('PRINT', 'Applying filter: PO Send to Vendor = Completed...');
-    await page.click('.o_searchview_dropdown_toggler');
-    await page.waitForTimeout(600);
-    await page.getByRole('menuitem', { name: 'Add Custom Filter' }).click();
+    // Structure verified live 2026-07-27 via tools/probe-filter-connector.mjs.
 
-    // The dialog opens on an arbitrary default field, so bind to the field
-    // selector's own class rather than that field's label — a Studio reorder
-    // must not silently retarget this click.
-    const dlg = page.locator('.modal').last();
-    await dlg.locator('.o_model_field_selector').first().waitFor({ timeout: 15000 });
-    await dlg.locator('.o_model_field_selector').first().click();
+    const openCustomFilter = async () => {
+      await page.click('.o_searchview_dropdown_toggler');
+      await page.waitForTimeout(600);
+      await page.getByRole('menuitem', { name: 'Add Custom Filter' }).click();
+      const dlg = page.locator('.modal').last();
+      await dlg.locator('.o_model_field_selector').first().waitFor({ timeout: 15000 });
+      return dlg;
+    };
 
-    const popoverInput = page.locator('.o_model_field_selector_popover input').first();
-    await popoverInput.waitFor({ timeout: 15000 });
-    await popoverInput.fill('PO Send to Vendor');
-    await page.getByRole('button', { name: 'PO Send to Vendor' }).click();
+    // Sets one rule's field, operator and value. `row` is the 0-based rule
+    // index. The field selector is addressed by its own class rather than by
+    // the label of whichever field the dialog happens to open on — codegen
+    // emits things like div:has-text("Buyer"):nth(3), which a Studio field
+    // reorder would silently retarget to the wrong field.
+    //
+    // Select indices are positional because Odoo renders operator and value as
+    // plain sibling <select>s, but they are only read after waiting for the
+    // expected count: a many2one field contributes one select and a selection
+    // field two, so the count changes as each field is chosen. Waiting for the
+    // count is also the readiness signal that the re-render finished.
+    const setRule = async (dlg, row, fieldLabel, value) => {
+      await dlg.locator('.o_model_field_selector').nth(row).click();
+      const popoverInput = page.locator('.o_model_field_selector_popover input').first();
+      await popoverInput.waitFor({ timeout: 15000 });
+      await popoverInput.fill(fieldLabel);
+      await page.getByRole('button', { name: fieldLabel, exact: true }).first().click();
 
-    // A selection field renders a second <select> for the value. Waiting for
-    // it is how we know the field change finished re-rendering the row —
-    // more reliable than a blind timeout.
-    await dlg.locator('select').nth(1).waitFor({ timeout: 15000 });
-    const selects = dlg.locator('select');
-    await selects.nth(0).selectOption('"="');
-    await selects.nth(1).selectOption('"completed"');
+      // Each completed selection-field rule contributes exactly two selects, so
+      // waiting for the last one to exist is how we know this row finished
+      // re-rendering — more reliable than a blind timeout.
+      await dlg.locator('select').nth((row + 1) * 2 - 1).waitFor({ timeout: 15000 });
 
-    await dlg.getByRole('button', { name: 'Add', exact: true }).click();
+      const selects = dlg.locator('select');
+      await selects.nth(row * 2).selectOption('"="');
+      await selects.nth(row * 2 + 1).selectOption(value);
+    };
+
+    // ── Dialog 1: send status, ORed ──
+    log('PRINT', 'Applying filter 1: PO Send to Vendor = Completed or Resend PO...');
+    const dlg1 = await openCustomFilter();
+    await setRule(dlg1, 0, 'PO Send to Vendor', '"completed"');
+
+    await dlg1.getByRole('button', { name: 'New Rule', exact: true }).click();
+    await page.waitForTimeout(800);
+    await setRule(dlg1, 1, 'PO Send to Vendor', '"resend_po"');
+
+    // The connector currently defaults to "any", but this dialog's defaults
+    // have already proven not to be a contract, so set it rather than trust it.
+    // Scoped to the dialog's own dropdown: a page-wide menuitem lookup can also
+    // match the "Purchase" app menu.
+    const connector = dlg1.locator('.o_tree_editor_connector button.dropdown-toggle').first();
+    if ((await connector.innerText()).trim().toLowerCase() !== 'any') {
+      await connector.click();
+      await page.waitForTimeout(400);
+      await page.locator('.dropdown-menu.show').getByRole('menuitem', { name: 'any', exact: true })
+        .first().click();
+      await page.waitForTimeout(400);
+    }
+    if ((await connector.innerText()).trim().toLowerCase() !== 'any')
+      throw new Error('Filter 1: connector is not "any" — rules would AND instead of OR');
+
+    await dlg1.getByRole('button', { name: 'Add', exact: true }).click();
     await page.waitForTimeout(2000);
 
     // Fail loud: a silently-unapplied filter would print the unfiltered set.
-    const facet = page.locator('.o_searchview_facet').filter({ hasText: 'PO Send to Vendor' });
-    if (await facet.count() === 0)
+    if (await page.locator('.o_searchview_facet').filter({ hasText: 'PO Send to Vendor' }).count() === 0)
       throw new Error('Vendor-send filter did not apply — facet missing after Add');
-    log('PRINT', 'Filter applied: PO Send to Vendor = Completed');
+    log('PRINT', 'Filter 1 applied');
+
+    // ── Dialog 2: approve status, ANDed against filter 1 ──
+    log('PRINT', 'Applying filter 2: Doc Approve Status = Approved...');
+    const dlg2 = await openCustomFilter();
+    await setRule(dlg2, 0, 'Doc Approve Status', '"approved"');
+    await dlg2.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.waitForTimeout(2000);
+
+    if (await page.locator('.o_searchview_facet').filter({ hasText: 'Doc Approve Status' }).count() === 0)
+      throw new Error('Approve-status filter did not apply — facet missing after Add');
+    log('PRINT', 'Filter 2 applied');
 
     log('PRINT', `Expanding ${TARGET_DATE}...`);
 
