@@ -604,6 +604,10 @@ async function findOrCreateFolder(drive, name, parentId) {
 // of the document. tools/probe-pdf-stability.mjs exercises this exact function.
 const HASH_KEY = 'poContentHash';
 
+// How many files are sent to Drive at once. Override with PO_UPLOAD_CONCURRENCY
+// to tune against a slow link or a rate-limited account without editing code.
+const UPLOAD_CONCURRENCY = Math.max(1, Number(process.env.PO_UPLOAD_CONCURRENCY) || 6);
+
 async function contentHash(buf) {
   const { text } = await pdfParse(buf);
   return createHash('sha256').update(text.replace(/\s+/g, ' ').trim()).digest('hex');
@@ -652,7 +656,7 @@ async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
   const progress = () => process.stdout.write(
     `\r[UPLOAD] ${counters.uploaded} uploaded, ${counters.replaced} replaced, ${counters.skipped} skipped...`);
 
-  for (const pdf of pdfs) {
+  async function handleOne(pdf) {
     const localPath = join(localDir, pdf);
     const remote    = existingOnDrive.get(pdf);
     const localHash = await contentHash(readFileSync(localPath));
@@ -666,7 +670,7 @@ async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
       });
       counters.uploaded++;
       progress();
-      continue;
+      return;
     }
 
     let knownHash = remote.hash;
@@ -678,7 +682,7 @@ async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
         // overwrite it on a guess.
         logWarning('UPLOAD', `${pdf}: could not read existing Drive copy (${e.message}) — skipped`);
         counters.skipped++;
-        continue;
+        return;
       }
     }
 
@@ -691,7 +695,7 @@ async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
         });
       }
       counters.skipped++;
-      continue;
+      return;
     }
 
     // Content changed: update in place. Replacing the same file ID keeps every
@@ -708,6 +712,20 @@ async function uploadDirToDrive(drive, localDir, driveFolderId, counters) {
     log('UPLOAD', `Replaced changed PO: ${pdf}`);
     progress();
   }
+
+  // Files are handled a few at a time. Each one is a round trip to Drive that
+  // spends nearly all its time waiting, so serialising them made the upload
+  // ~89% of a backfill's runtime; the work is latency-bound, not bandwidth- or
+  // CPU-bound, so concurrency converts almost directly into speedup. Kept
+  // deliberately small — going wide invites Drive's rate limiter, and a
+  // throttled retry storm is slower than never having parallelised.
+  // Counter increments stay safe: one JS thread, no await between read and write.
+  let next = 0;
+  const worker = async () => {
+    while (next < pdfs.length) await handleOne(pdfs[next++]);
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, pdfs.length) }, worker));
 }
 
 async function stageUpload() {
