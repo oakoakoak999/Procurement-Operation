@@ -659,12 +659,23 @@ async function stageUpload() {
   const drive = google.drive({ version: 'v3', auth });
 
   // year/month/day, all derived from the *target* date rather than today, so a
-  // backfill run files its POs under the day they belong to. Zero-padded
-  // numeric so the folders sort correctly in Drive's own listing.
+  // backfill run files its POs under the day they belong to.
+  //
+  // Naming is Oak's call (2026-07-27): month as its English name, day as a full
+  // DD/MM/YYYY date. Two consequences to know about rather than rediscover:
+  // Drive sorts names as text, so month folders list alphabetically (April,
+  // August, December...) not in calendar order; and the day folder's slashes,
+  // while legal in Drive itself, get rewritten by Drive for Desktop when synced
+  // to Windows, which cannot have "/" in a folder name.
+  //
+  // Month names are a fixed table, not toLocaleString — folder names must not
+  // depend on the ICU data or locale of whatever machine runs the pipeline.
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+                  'July', 'August', 'September', 'October', 'November', 'December'];
   const pad2       = n => String(n).padStart(2, '0');
   const year       = String(_d.getFullYear());
-  const month      = pad2(_d.getMonth() + 1);
-  const day        = pad2(_d.getDate());
+  const month      = MONTHS[_d.getMonth()];
+  const day        = `${pad2(_d.getDate())}/${pad2(_d.getMonth() + 1)}/${year}`;
 
   const yearFolder  = await findOrCreateFolder(drive, year,  ORDER_FOLDER);
   const monthFolder = await findOrCreateFolder(drive, month, yearFolder);

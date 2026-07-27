@@ -23,7 +23,15 @@ loadEnv(join(ROOT, '.env'));
 const arg = (f, d) => { const i = process.argv.indexOf(f); return i !== -1 ? process.argv[i + 1] : d; };
 const BU   = arg('--bu', 'PSV');
 const DATE = arg('--date', '2026-05-05');
-const [Y, M, D] = DATE.split('-');
+
+// Must mirror stageUpload's folder naming exactly, or this reports MISSING for
+// folders that are actually there.
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'];
+const [yy, mm, dd] = DATE.split('-');
+const Y = yy;
+const M = MONTHS[Number(mm) - 1];
+const D = `${dd}/${mm}/${yy}`;
 
 const TOKEN = join(ROOT, '.gdrive-po-token.json');
 if (!existsSync(TOKEN)) throw new Error('No .gdrive-po-token.json — authorize by running the pipeline once');
