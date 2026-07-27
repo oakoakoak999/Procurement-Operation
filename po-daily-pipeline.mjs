@@ -740,12 +740,13 @@ async function stageUpload() {
   // year/month/day, all derived from the *target* date rather than today, so a
   // backfill run files its POs under the day they belong to.
   //
-  // Naming is Oak's call (2026-07-27): month as its English name, day as a full
-  // DD/MM/YYYY date. Two consequences to know about rather than rediscover:
-  // Drive sorts names as text, so month folders list alphabetically (April,
-  // August, December...) not in calendar order; and the day folder's slashes,
-  // while legal in Drive itself, get rewritten by Drive for Desktop when synced
-  // to Windows, which cannot have "/" in a folder name.
+  // Naming is Oak's call (2026-07-27): month as "NN.Name", day as a full
+  // DD/MM/YYYY date. The numeric prefix exists because Drive sorts names as
+  // text — bare month names list as April, August, December..., which is
+  // alphabetical and useless. It is zero-padded for the same reason: "1.January"
+  // would sort after "10.October". Still worth knowing: the day folder's
+  // slashes, while legal in Drive itself, get rewritten by Drive for Desktop
+  // when synced to Windows, which cannot have "/" in a folder name.
   //
   // Month names are a fixed table, not toLocaleString — folder names must not
   // depend on the ICU data or locale of whatever machine runs the pipeline.
@@ -753,7 +754,7 @@ async function stageUpload() {
                   'July', 'August', 'September', 'October', 'November', 'December'];
   const pad2       = n => String(n).padStart(2, '0');
   const year       = String(_d.getFullYear());
-  const month      = MONTHS[_d.getMonth()];
+  const month      = `${pad2(_d.getMonth() + 1)}.${MONTHS[_d.getMonth()]}`;
   const day        = `${pad2(_d.getDate())}/${pad2(_d.getMonth() + 1)}/${year}`;
 
   const yearFolder  = await findOrCreateFolder(drive, year,  ORDER_FOLDER);
