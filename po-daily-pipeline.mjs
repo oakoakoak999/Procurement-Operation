@@ -604,9 +604,14 @@ async function findOrCreateFolder(drive, name, parentId) {
 // of the document. tools/probe-pdf-stability.mjs exercises this exact function.
 const HASH_KEY = 'poContentHash';
 
-// How many files are sent to Drive at once. Override with PO_UPLOAD_CONCURRENCY
-// to tune against a slow link or a rate-limited account without editing code.
+// How many files are sent to Drive at once, and how many vendor folders are
+// worked on at once. Peak in-flight requests is roughly the product, so raise
+// these together carefully — the ceiling that matters is Drive's rate limiter,
+// and a throttled retry storm is slower than never having parallelised.
+// Override with PO_UPLOAD_CONCURRENCY / PO_FOLDER_CONCURRENCY to tune against a
+// slow link or a rate-limited account without editing code.
 const UPLOAD_CONCURRENCY = Math.max(1, Number(process.env.PO_UPLOAD_CONCURRENCY) || 6);
+const FOLDER_CONCURRENCY = Math.max(1, Number(process.env.PO_FOLDER_CONCURRENCY) || 4);
 
 async function contentHash(buf) {
   const { text } = await pdfParse(buf);
@@ -764,10 +769,24 @@ async function stageUpload() {
   log('UPLOAD', `${vendorDirs.length} vendor folder(s) → Drive:${ORDER_FOLDER}/${datePath}`);
   const counters = { uploaded: 0, replaced: 0, skipped: 0 };
 
-  for (const vendorName of vendorDirs) {
-    const vendorDriveId = await findOrCreateFolder(drive, vendorName, dayFolder);
-    await uploadDirToDrive(drive, join(SPLIT_DIR, vendorName), vendorDriveId, counters);
-  }
+  // Vendor folders are processed a few at a time, not one after another. Two
+  // reasons, both measured: each folder costs two serial round trips before any
+  // file moves (findOrCreateFolder, then the files.list inside uploadDirToDrive),
+  // and a vendor folder holds ~3 PDFs on average — so a 6-wide file pool scoped
+  // to one folder can never actually run 6 wide. Overlapping folders fixes both.
+  //
+  // Safe to run concurrently because each worker takes a distinct vendor name:
+  // findOrCreateFolder's list-then-create is only racy for the *same* name.
+  let vendorIdx = 0;
+  const folderWorker = async () => {
+    while (vendorIdx < vendorDirs.length) {
+      const vendorName    = vendorDirs[vendorIdx++];
+      const vendorDriveId = await findOrCreateFolder(drive, vendorName, dayFolder);
+      await uploadDirToDrive(drive, join(SPLIT_DIR, vendorName), vendorDriveId, counters);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(FOLDER_CONCURRENCY, vendorDirs.length) }, folderWorker));
 
   // Vendor-less PDFs in the split root: upload to the day folder so nothing is lost
   if (rootPdfs.length > 0) {
