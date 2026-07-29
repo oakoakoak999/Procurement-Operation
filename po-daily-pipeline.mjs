@@ -39,7 +39,7 @@ import { createServer } from 'http';
 import { createHash } from 'crypto';
 import { ODOO_URL, ODOO_ENV, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
 import { loadEnv, log, makeRunId, cfAccessHeaders } from './lib/util.mjs';
-import { selectDatabase } from './lib/odoo-nav.mjs';
+import { selectDatabase, login, switchBU } from './lib/odoo-nav.mjs';
 
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -119,8 +119,12 @@ async function stagePrint() {
   const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });
   let page;
   try {
-    // Inside the try so a newContext/newPage failure still hits the finally —
-    // withRetry reruns stagePrint, so each leak would be one orphan Chrome.
+    // Deliberately not odoo-nav's connectAndNavigate(), which launches the
+    // browser and opens the context together. Here the launch is outside the
+    // try and the context inside, so a newContext/newPage failure still reaches
+    // the finally — withRetry reruns stagePrint, and each leak would otherwise
+    // be one orphan Chrome. Splitting them is the fix; do not recombine.
+    //
     // extraHTTPHeaders carries the Cloudflare Access service token when set
     // (empty {} = no-op on inside-network runs); scoped to Odoo requests only.
     const context = await browser.newContext({ extraHTTPHeaders: cfAccessHeaders(ODOO_ENV) });
@@ -130,37 +134,16 @@ async function stagePrint() {
     log('PRINT', 'Selecting database...');
     await selectDatabase(page, ODOO_URL);
 
-    if (page.url().includes('/login')) {
-      log('PRINT', 'Logging in...');
-      await page.fill('input[name="login"]', USERNAME);
-      await page.fill('input[name="password"]', PASSWORD);
-      await page.click('button[type="submit"]');
-      await page.waitForLoadState('load');
-      await page.waitForSelector('.o_main_navbar');
-      log('PRINT', 'Logged in');
-    }
+    // login() no-ops when the session is already authenticated, so the /login
+    // check it used to be wrapped in lives inside it now.
+    await login(page, { username: USERNAME, password: PASSWORD });
 
-    log('PRINT', `Switching to BU ${TARGET_BU_CODE}...`);
-    await page.waitForSelector('.o_main_navbar', { timeout: 30000 });
-    let switcherFound = false;
-    try { await page.waitForSelector('.o_switch_company_menu', { timeout: 5000, state: 'attached' }); switcherFound = true; } catch {}
-    if (switcherFound) {
-      await page.click('.o_switch_company_menu button');
-      await page.waitForTimeout(1000);
-      const companies = await page.evaluate(() =>
-        Array.from(document.querySelectorAll('.o_switch_company_menu [data-company-id]')).map(el => ({
-          id: el.getAttribute('data-company-id'),
-          label: el.querySelector('.company_label')?.textContent?.trim() || '',
-        }))
-      );
-      const odooPrefix = BU_ODOO_PREFIX[TARGET_BU_CODE];
-      if (!odooPrefix) throw new Error(`Unknown BU "${TARGET_BU_CODE}". Valid: ${Object.keys(BU_ODOO_PREFIX).join(', ')}`);
-      const target = companies.find(c => c.label.startsWith(odooPrefix));
-      if (!target) throw new Error(`BU "${TARGET_BU_CODE}" not found in company list`);
-      await page.click(`[data-company-id="${target.id}"] .log_into`);
-      await page.waitForLoadState('load');
-      await page.waitForTimeout(2000);
-      log('PRINT', `Switched to ${target.label}`);
+    // Returns the company label actually clicked, or null in single-company
+    // mode. Worth capturing on production, where the company list is not yet
+    // known to be laid out the way UAT's is.
+    const switchedTo = await switchBU(page, TARGET_BU_CODE, BU_ODOO_PREFIX);
+    if (switchedTo === null) {
+      log('PRINT', `No company switcher — staying in the session's current BU`);
     }
 
     log('PRINT', 'Navigating to Purchase Orders...');
