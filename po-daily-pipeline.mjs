@@ -39,6 +39,7 @@ import { createServer } from 'http';
 import { createHash } from 'crypto';
 import { ODOO_URL, ODOO_ENV, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
 import { loadEnv, log, makeRunId, cfAccessHeaders } from './lib/util.mjs';
+import { selectDatabase } from './lib/odoo-nav.mjs';
 
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
@@ -124,23 +125,10 @@ async function stagePrint() {
     // (empty {} = no-op on inside-network runs); scoped to Odoo requests only.
     const context = await browser.newContext({ extraHTTPHeaders: cfAccessHeaders(ODOO_ENV) });
     page = await context.newPage();
-    // UAT puts a database selector in front of everything and the database is
-    // named princ-smarterp-prod-base-* even there. Production serves a single
-    // database and has no selector page at all, so asking for one would just
-    // block on waitForSelector until the timeout. Go straight to /web instead;
-    // Odoo bounces an unauthenticated request to /web/login, which the login
-    // block below already handles.
-    if (ODOO_ENV === 'uat') {
-      log('PRINT', 'Selecting database...');
-      await page.goto(`${ODOO_URL}/web/database/selector`);
-      await page.waitForSelector('a[href*="princ-smarterp-prod-base-"]');
-      await page.click('a[href*="princ-smarterp-prod-base-"]');
-      await page.waitForLoadState('load');
-    } else {
-      log('PRINT', 'Production — no database selector, going straight to /web');
-      await page.goto(`${ODOO_URL}/web`);
-      await page.waitForLoadState('load');
-    }
+    // Shared with PR2PO, Confirm-PO and PR-action — it is the one place that
+    // knows UAT has a database selector and production does not.
+    log('PRINT', 'Selecting database...');
+    await selectDatabase(page, ODOO_URL);
 
     if (page.url().includes('/login')) {
       log('PRINT', 'Logging in...');
