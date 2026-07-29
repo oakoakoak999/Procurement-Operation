@@ -124,11 +124,23 @@ async function stagePrint() {
     // (empty {} = no-op on inside-network runs); scoped to Odoo requests only.
     const context = await browser.newContext({ extraHTTPHeaders: cfAccessHeaders(ODOO_ENV) });
     page = await context.newPage();
-    log('PRINT', 'Selecting database...');
-    await page.goto(`${ODOO_URL}/web/database/selector`);
-    await page.waitForSelector('a[href*="princ-smarterp-prod-base-"]');
-    await page.click('a[href*="princ-smarterp-prod-base-"]');
-    await page.waitForLoadState('load');
+    // UAT puts a database selector in front of everything and the database is
+    // named princ-smarterp-prod-base-* even there. Production serves a single
+    // database and has no selector page at all, so asking for one would just
+    // block on waitForSelector until the timeout. Go straight to /web instead;
+    // Odoo bounces an unauthenticated request to /web/login, which the login
+    // block below already handles.
+    if (ODOO_ENV === 'uat') {
+      log('PRINT', 'Selecting database...');
+      await page.goto(`${ODOO_URL}/web/database/selector`);
+      await page.waitForSelector('a[href*="princ-smarterp-prod-base-"]');
+      await page.click('a[href*="princ-smarterp-prod-base-"]');
+      await page.waitForLoadState('load');
+    } else {
+      log('PRINT', 'Production — no database selector, going straight to /web');
+      await page.goto(`${ODOO_URL}/web`);
+      await page.waitForLoadState('load');
+    }
 
     if (page.url().includes('/login')) {
       log('PRINT', 'Logging in...');
