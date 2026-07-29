@@ -25,10 +25,14 @@ import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { connectAndNavigate, selectDatabase, login, switchBU, navigateToRFQList } from './lib/odoo-nav.mjs';
 import { parseOdooDate, addWorkingDays, formatDDMMYYYY, formatOdooDateTime, bangkokToday } from './lib/arrival-date.mjs';
-import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
+import { ODOO_URL, BU_ODOO_PREFIX, requireUat } from './lib/config.mjs';
 import { loadEnv, log, makeRunId } from './lib/util.mjs';
 import { appendConfirmLog } from './lib/execution-log.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
+
+// This script confirms purchase orders. Refuse anything but UAT, and refuse it
+// here rather than at the first click, so there is no half-done run to undo.
+requireUat('odoo_po_confirm.mjs');
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 loadEnv(join(__dir, '.env'));

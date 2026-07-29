@@ -31,7 +31,7 @@ import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction, resetSelection } from './lib/pr-row-actions.mjs';
-import { ODOO_URL, REF_SHEET, BU_ODOO_PREFIX, BU_LOG_SHEETS } from './lib/config.mjs';
+import { ODOO_URL, REF_SHEET, BU_ODOO_PREFIX, BU_LOG_SHEETS, requireUat } from './lib/config.mjs';
 import { loadEnv, log, makeRunId } from './lib/util.mjs';
 import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';
 import {
@@ -40,6 +40,10 @@ import {
   navigateToRFQList, scrapePONumbers,
 } from './lib/odoo-nav.mjs';
 import { appendExecutionLog } from './lib/execution-log.mjs';
+
+// This script creates purchase orders. Refuse anything but UAT, and refuse it
+// here rather than at the first click, so there is no half-done run to undo.
+requireUat('odoo_pr_to_po.mjs');
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────

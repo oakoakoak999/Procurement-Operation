@@ -37,7 +37,7 @@ import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
 import { createHash } from 'crypto';
-import { ODOO_URL, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
+import { ODOO_URL, ODOO_ENV, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
 import { loadEnv, log, makeRunId, cfAccessHeaders } from './lib/util.mjs';
 
 const require = createRequire(import.meta.url);
@@ -122,7 +122,7 @@ async function stagePrint() {
     // withRetry reruns stagePrint, so each leak would be one orphan Chrome.
     // extraHTTPHeaders carries the Cloudflare Access service token when set
     // (empty {} = no-op on inside-network runs); scoped to Odoo requests only.
-    const context = await browser.newContext({ extraHTTPHeaders: cfAccessHeaders() });
+    const context = await browser.newContext({ extraHTTPHeaders: cfAccessHeaders(ODOO_ENV) });
     page = await context.newPage();
     log('PRINT', 'Selecting database...');
     await page.goto(`${ODOO_URL}/web/database/selector`);

@@ -28,7 +28,7 @@ import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction } from './lib/pr-row-actions.mjs';
-import { ODOO_URL, BU_ODOO_PREFIX } from './lib/config.mjs';
+import { ODOO_URL, BU_ODOO_PREFIX, requireUat } from './lib/config.mjs';
 import { loadEnv, log } from './lib/util.mjs';
 import { appendDecision } from './lib/decision-log.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
@@ -36,6 +36,11 @@ import {
   connectAndNavigate, selectDatabase, login, switchBU,
   navigateToPRtoPO, removeFilter, groupByBuyer, expandBuyerGroup,
 } from './lib/odoo-nav.mjs';
+
+// This script approves and rejects purchase requests. Refuse anything but UAT,
+// and refuse it here rather than at the first click, so there is no half-done
+// run to undo.
+requireUat('odoo_pr_action.mjs');
 
 // ─── LOAD .env ────────────────────────────────────────────────────────────────
 const __dir = dirname(fileURLToPath(import.meta.url));
