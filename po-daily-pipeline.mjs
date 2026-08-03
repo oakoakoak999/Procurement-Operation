@@ -32,7 +32,7 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync,
   readdirSync, createReadStream,
 } from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
@@ -588,7 +588,7 @@ function electFolder(files) {
     new Date(a.createdTime) - new Date(b.createdTime) || a.id.localeCompare(b.id))[0];
 }
 
-async function findOrCreateFolder(drive, name, parentId) {
+export async function findOrCreateFolder(drive, name, parentId) {
   const safe = name.replace(/'/g, "\\'");
   const q    = `name='${safe}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
   const list = () => drive.files.list({
@@ -835,7 +835,11 @@ async function stageUpload() {
 // MAIN
 // ══════════════════════════════════════════════════════════════════════════════
 
-(async () => {
+// Named and guarded rather than a bare IIFE so tools/probe-folder-race.mjs can
+// import findOrCreateFolder and exercise it directly. Importing an unguarded
+// script runs the entire pipeline as a side effect of the import, which makes
+// the race branch untestable except in production.
+async function main() {
   console.log(`\n── PO Daily Pipeline ── RUN_ID: ${RUN_ID} — ${TARGET_DATE} ${'─'.repeat(Math.max(0, 40 - TARGET_DATE.length))}`);
   console.log(`   Print: ${SKIP_PRINT ? 'SKIP' : 'ON'} | Split: ${SKIP_SPLIT ? 'SKIP' : 'ON'} | Drive: ${ORDER_FOLDER}`);
   console.log(`${'─'.repeat(56)}\n`);
@@ -909,4 +913,9 @@ async function stageUpload() {
     }
     if (runStats.status === 'FAILED') process.exit(1);
   }
-})();
+}
+
+// Run only when executed directly. run-po-daily-batch.mjs spawns this file as a
+// child process (`node po-daily-pipeline.mjs ...`), which still matches, so the
+// batch path is unaffected; an `import` of this module does not.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) await main();
