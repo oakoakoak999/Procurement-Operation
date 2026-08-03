@@ -1,6 +1,6 @@
-name: PO-Daily batch (manual)
+name: PO-Daily batch (scheduled + manual)
 
-# Manual run of the PO-Daily batch on a cloud runner. Leave `bu` blank to run
+# Runs on a schedule (see the cron block) and on demand. Leave `bu` blank to run
 # every BU that has a Drive order-folder configured (throttled by max_parallel),
 # or pass one code for a single-BU run. Leave `date` blank for today.
 #
@@ -13,17 +13,43 @@ name: PO-Daily batch (manual)
 # against files already there, so a re-run skips existing names rather than
 # duplicating — that is the safety net, not a --test mode. Use deliberately.
 #
-# environment=prod prints and uploads REAL production POs, and Drive dedup is no
-# safety net there because the prod folders start empty. Run the connectivity
-# probe against prod first, then a single BU and a single date.
+# environment=prod prints and uploads REAL production POs. Dedup does protect
+# re-runs there now that the prod folders hold data — a repeat sweep of 03 Aug
+# skipped 149 of 151 PSV files and uploaded only the new one. That was not true
+# when prod was first cut over, which is why this warning used to say otherwise.
+#
+# If the runner ever stops reaching Odoo, run the connectivity probe before
+# anything else: it answers in 40 seconds what a failed batch takes 3 minutes to
+# hint at, and it distinguishes a token problem from a login problem.
 on:
+  # Times are UTC; Thailand is UTC+7 year-round with no DST, so the offset is a
+  # constant 7 hours. GitHub fires scheduled runs late under load -- 5 to 30
+  # minutes is normal -- so treat these as approximate. Every day including
+  # weekends: POs are raised on Saturdays and Sundays (measured, not assumed).
+  schedule:
+    # Intraday sweeps: 09:30, 10:30, 11:30, 13:30, 15:30, 16:30 ICT.
+    # Each sweep is a snapshot of what exists at that moment, so the point of
+    # repeating is latency -- how soon a PO's PDF reaches Drive -- not coverage.
+    # A full 18-BU sweep measured ~14 minutes, well inside the 1-hour spacing,
+    # so consecutive runs cannot overlap.
+    - cron: '30 2,3,4,6,8,9 * * *'
+    # Yesterday sweep, 07:30 ICT. Closes the gap the last intraday sweep leaves
+    # open: anything raised between 16:30 and midnight, plus edits to POs that
+    # were already uploaded (the pipeline replaces on content-hash change).
+    - cron: '30 0 * * *'
   workflow_dispatch:
     inputs:
       environment:
-        description: "Which SmartERP — prod prints REAL production POs"
+        # prod is the default because prod is where the work is: the schedule
+        # runs against it, and a manual run is nearly always a top-up or a retry
+        # of a scheduled one. uat stays selectable for testing changes to the
+        # pipeline, but it is no longer the normal case and defaulting to it
+        # meant the common action needed an explicit choice while the rare one
+        # happened by accident.
+        description: "Which SmartERP — prod is live data; pick uat only to test"
         type: choice
-        options: [uat, prod]
-        default: uat
+        options: [prod, uat]
+        default: prod
       bu:
         description: "BU code (e.g. PSV), or blank for ALL order-folder BUs"
         default: ""
@@ -39,6 +65,15 @@ on:
 
 permissions:
   contents: write   # runner must push the agent-memory folder (execution log + Episode Index) back
+
+# One sweep at a time, queued rather than cancelled. Two batches running
+# concurrently is a real failure mode, not a theoretical one: it hits the Google
+# Drive per-user rate limit during the folder-create burst, and the second run
+# can clobber the first's state. A late-firing schedule overlapping the next one
+# is exactly how that would happen unattended.
+concurrency:
+  group: po-daily-batch
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -93,11 +128,28 @@ jobs:
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           CF_ACCESS_CLIENT_ID_PROD: ${{ secrets.CF_ACCESS_CLIENT_ID_PROD }}
           CF_ACCESS_CLIENT_SECRET_PROD: ${{ secrets.CF_ACCESS_CLIENT_SECRET_PROD }}
-          ENVIRONMENT: ${{ inputs.environment }}
+          # Defaults are spelled out rather than relying on the input defaults
+          # above: on a `schedule` trigger there are no inputs at all, so
+          # `inputs.environment` is the empty string. --env="" makes config.mjs
+          # fall through to its own 'uat' default, and every scheduled run would
+          # quietly sweep UAT while reporting success. The fallbacks below are
+          # what make the cron actually production.
+          ENVIRONMENT: ${{ inputs.environment || 'prod' }}
           BU: ${{ inputs.bu }}
           DATE: ${{ inputs.date }}
-          MAXP: ${{ inputs.max_parallel }}
+          MAXP: ${{ inputs.max_parallel || '2' }}
+          # Which cron fired, blank on a manual run. This is the only way to tell
+          # the two schedules apart -- they share one workflow so they stay in
+          # step with each other.
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
+          # The 00:30 UTC entry is the yesterday sweep. TZ is Asia/Bangkok (set
+          # above), so `date -d yesterday` is yesterday in Bangkok, not UTC --
+          # which matters at 07:30 local, when UTC is still on the previous day.
+          if [ "$SCHEDULE" = "30 0 * * *" ]; then
+            DATE=$(date -d yesterday +%Y-%m-%d)
+            echo "[RUN] yesterday sweep — catching POs raised or edited after the last sweep"
+          fi
           # Blank BU = all order-folder BUs (run-po-daily-batch enumerates them);
           # one code = single BU. Blank date = today (the pipeline defaults it).
           if [ -n "$BU" ]; then BU_FLAG="--bu=$BU"; MAXP=1; fi
@@ -105,6 +157,10 @@ jobs:
           if [ "$ENVIRONMENT" = "prod" ]; then
             echo "[RUN] *** PRODUCTION *** — these are real POs"
           fi
+          # Printed on every run, including manual ones, so the yesterday
+          # sweep's date arithmetic can be checked without waiting for 07:30 to
+          # come round -- `date -d` is GNU syntax and this is a Windows runner.
+          echo "[RUN] clock: now=$(date +'%Y-%m-%d %H:%M %Z') yesterday=$(date -d yesterday +%Y-%m-%d)"
           echo "[RUN] env=$ENVIRONMENT | bu=${BU:-ALL} | date=${DATE:-today} | max-parallel=$MAXP"
           node run-po-daily-batch.mjs $BU_FLAG $DATE_FLAG --headless --max-parallel="$MAXP" --env="$ENVIRONMENT"
 
