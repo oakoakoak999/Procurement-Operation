@@ -90,17 +90,29 @@ const RUN_ID = makeRunId();
 const PRINT_MAX_RETRIES   = 3;
 const PRINT_RETRY_BACKOFF = 3000;
 
-// stagePrint opens/closes its own browser per call, so retrying the whole
-// function is safe — each attempt starts from a clean session.
-async function withRetry(name, fn) {
-  for (let attempt = 1; attempt <= PRINT_MAX_RETRIES; attempt++) {
+// Drive answers an overloaded moment with 503 Service Unavailable, and without a
+// retry that ends the whole run: on 2026-08-03 it cost PPCH, PSUV and PUTH their
+// entire day -- 116 PDFs printed and split, then dropped at the last step.
+//
+// Longer and fewer than PRINT's: a 503 is the server asking for room, so backing
+// off 15s/30s/45s is more likely to clear it than hammering at 3s, and the print
+// stage has already done the expensive work by then.
+const UPLOAD_MAX_RETRIES   = 4;
+const UPLOAD_RETRY_BACKOFF = 15000;
+
+// Safe to retry whole stages rather than individual calls: stagePrint opens and
+// closes its own browser per call, so each attempt starts from a clean session,
+// and stageUpload dedups by content hash, so a second attempt skips whatever the
+// first one already landed and re-sends only what is missing.
+async function withRetry(name, fn, maxRetries = PRINT_MAX_RETRIES, backoff = PRINT_RETRY_BACKOFF) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      const isLast = attempt === PRINT_MAX_RETRIES;
-      log(name, `FAILED (attempt ${attempt}/${PRINT_MAX_RETRIES}): ${err.message}`);
+      const isLast = attempt === maxRetries;
+      log(name, `FAILED (attempt ${attempt}/${maxRetries}): ${err.message}`);
       if (isLast) throw err;
-      await new Promise(r => setTimeout(r, PRINT_RETRY_BACKOFF * attempt));
+      await new Promise(r => setTimeout(r, backoff * attempt));
     }
   }
 }
@@ -558,17 +570,54 @@ async function authorizeGDrive() {
   return auth;
 }
 
+// Drive puts no unique-name constraint on siblings, so a plain list-then-create
+// is racy: two callers both get "not found" and both create. That is not
+// theoretical -- it produced three `07.July` folders under PPAT on 2026-07-28,
+// created 1.7s apart, with 21 PDFs stranded in the two losers. Six BUs were hit.
+//
+// The racers are separate PROCESSES (the backfill runs several dates of one BU
+// in parallel, and dates in the same month want the same month folder), so an
+// in-process lock or cache cannot see them. The only fix available to a client
+// is to create first and reconcile after.
+//
+// Every racer applies the same tie-break to the same server-side data -- oldest
+// createdTime, then lowest id -- so they all elect the same winner without
+// talking to each other, and each loser removes the empty folder it just made.
+function electFolder(files) {
+  return [...files].sort((a, b) =>
+    new Date(a.createdTime) - new Date(b.createdTime) || a.id.localeCompare(b.id))[0];
+}
+
 async function findOrCreateFolder(drive, name, parentId) {
   const safe = name.replace(/'/g, "\\'");
   const q    = `name='${safe}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
-  const res  = await drive.files.list({ q, fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true });
-  if (res.data.files.length) return res.data.files[0].id;
+  const list = () => drive.files.list({
+    q, fields: 'files(id,createdTime)', supportsAllDrives: true, includeItemsFromAllDrives: true,
+  });
+
+  const res = await list();
+  if (res.data.files.length) return electFolder(res.data.files).id;
+
   const f = await drive.files.create({
     requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
     fields: 'id',
     supportsAllDrives: true,
   });
-  return f.data.id;
+
+  // Look again: anyone who raced us is visible now.
+  const after = (await list()).data.files;
+  if (after.length <= 1) return f.data.id;
+
+  const winner = electFolder(after);
+  if (winner.id === f.data.id) return f.data.id;
+
+  // We lost. Trash the folder we just made -- it is empty, nothing has been
+  // uploaded into it yet -- and use the winner, same as every other racer.
+  log('UPLOAD', `folder race on "${name}" — using ${winner.id}, discarding own copy`);
+  await drive.files.update({
+    fileId: f.data.id, requestBody: { trashed: true }, fields: 'id', supportsAllDrives: true,
+  }).catch(() => {});   // losing the cleanup is untidy, not fatal; never fail the upload over it
+  return winner.id;
 }
 
 // ─── Content identity ─────────────────────────────────────────────────────────
@@ -758,8 +807,9 @@ async function stageUpload() {
   // and a vendor folder holds ~3 PDFs on average — so a 6-wide file pool scoped
   // to one folder can never actually run 6 wide. Overlapping folders fixes both.
   //
-  // Safe to run concurrently because each worker takes a distinct vendor name:
-  // findOrCreateFolder's list-then-create is only racy for the *same* name.
+  // Safe to run concurrently: each worker takes a distinct vendor name, and
+  // findOrCreateFolder now reconciles same-name races itself rather than relying
+  // on callers never colliding — which held here but not across processes.
   let vendorIdx = 0;
   const folderWorker = async () => {
     while (vendorIdx < vendorDirs.length) {
@@ -830,7 +880,8 @@ async function stageUpload() {
     }
 
     stage = 'UPLOAD';
-    const uploadCounters = await stageUpload();
+    const uploadCounters = await withRetry(
+      'UPLOAD', stageUpload, UPLOAD_MAX_RETRIES, UPLOAD_RETRY_BACKOFF);
     runStats.uploaded = uploadCounters.uploaded;
     runStats.replaced = uploadCounters.replaced;
     runStats.skipped  = uploadCounters.skipped;
