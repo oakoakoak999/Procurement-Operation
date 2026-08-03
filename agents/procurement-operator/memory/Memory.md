@@ -48,4 +48,5 @@
 | 2026-08-03 | 20260803-1451 | PO-Daily batch 2026-08-03 | PARTIAL | 18 BU · 18 with POs · 20 printed · 147 uploaded · 383 dup-skip | 3 BU failed |
 | 2026-08-03 | 20260803-1627 | PO-Daily batch 2026-08-03 | SUCCESS | 1 BU · 1 with POs · 1 printed · 15 uploaded · 46 dup-skip | print + upload |
 | 2026-08-03 | 20260803-1628 | PO-Daily batch 2026-08-03 | SUCCESS | 1 BU · 1 with POs · 1 printed · 38 uploaded · 17 dup-skip | print + upload |
+| 2026-08-03 | 20260803-1630 | PO-Daily batch 2026-08-03 | SUCCESS | 1 BU · 1 with POs · 1 printed · 25 uploaded · 12 dup-skip | print + upload |
 
