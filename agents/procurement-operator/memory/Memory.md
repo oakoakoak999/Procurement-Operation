@@ -40,4 +40,5 @@
 | 2026-07-29 | — | PO-Daily BACKFILL 2026-01-01→2026-07-15 | SUCCESS | 18 BU · 3,528 date-runs · 59,826 uploaded · 0 failed | One row for the whole historical backfill, not one per date — `tools/backfill-queue.mjs` calls the pipeline directly and bypasses the batch runner's memory sync, which would otherwise have meant 3,528 commits. 4 transient failures (one Drive 502, three unexplained child exits) all cleared on the retry pass. Folder depth is now year/NN.Month/DD/MM/YYYY/vendor |
 | 2026-08-03 | 20260803-1036 | PO-Daily batch 3 Aug 2026 | FAILED | 1 BU · 0 with POs · 0 printed · 0 uploaded · 0 dup-skip | 1 BU failed |
 | 2026-08-03 | 20260803-1317 | PO-Daily batch 2026-08-03 | SUCCESS | 18 BU · 17 with POs · 18 printed · 418 uploaded · 0 dup-skip | 1 BU had no POs |
+| 2026-08-03 | 20260803-0645 | PO-Daily batch 2026-08-03 | FAILED | 1 BU · 0 with POs · 0 printed · 0 uploaded · 0 dup-skip | 1 BU failed |
 
