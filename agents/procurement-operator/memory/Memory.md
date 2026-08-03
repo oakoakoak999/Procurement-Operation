@@ -44,4 +44,5 @@
 | 2026-08-03 | 20260803-0648 | PO-Daily batch 2026-08-03 | FAILED | 1 BU · 0 with POs · 0 printed · 0 uploaded · 0 dup-skip | 1 BU failed |
 | 2026-08-03 | 20260803-0706 | PO-Daily batch 2026-08-03 | SUCCESS | 1 BU · 1 with POs · 2 printed · 10 uploaded · 140 dup-skip | print + upload |
 | 2026-08-03 | 20260803-0720 | PO-Daily batch 2026-08-03 | SUCCESS | 1 BU · 1 with POs · 2 printed · 1 uploaded · 1 replaced · 149 dup-skip | 1 PO(s) re-issued and replaced |
+| 2026-08-03 | 20260803-0743 | PO-Daily batch 3 Aug 2026 | SUCCESS | 1 BU · 1 with POs · 2 printed · 4 uploaded · 150 dup-skip | print + upload |
 
