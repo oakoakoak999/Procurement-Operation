@@ -31,7 +31,7 @@ import { existsSync, writeFileSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction, resetSelection } from './lib/pr-row-actions.mjs';
-import { ODOO_URL, REF_SHEET, BU_ODOO_PREFIX, BU_LOG_SHEETS, requireUat } from './lib/config.mjs';
+import { ODOO_URL, REF_SHEET, BU_ODOO_PREFIX, BU_LOG_SHEETS, requireUat, odooCredentials } from './lib/config.mjs';
 import { loadEnv, log, makeRunId } from './lib/util.mjs';
 import { getSheetClient as getSheetClientBase, parseTier2Vendors } from './lib/sheets-client.mjs';
 import {
@@ -51,9 +51,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 loadEnv(join(__dir, '.env'));
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const USERNAME        = process.env.ODOO_USERNAME;
-const PASSWORD        = process.env.ODOO_PASSWORD;
-if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not set in .env');
+const { username: USERNAME, password: PASSWORD } = odooCredentials();
 const PROFILES = {
   supply:   { buyer: 'SUPPLY_BUYER',   logTab: 'MEDSUPPLY' },
   medicine: { buyer: 'MEDICINE_BUYER', logTab: 'MEDICINE'  },

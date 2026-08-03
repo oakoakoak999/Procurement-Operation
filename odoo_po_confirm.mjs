@@ -25,7 +25,7 @@ import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { connectAndNavigate, selectDatabase, login, switchBU, navigateToRFQList } from './lib/odoo-nav.mjs';
 import { parseOdooDate, addWorkingDays, formatDDMMYYYY, formatOdooDateTime, bangkokToday } from './lib/arrival-date.mjs';
-import { ODOO_URL, BU_ODOO_PREFIX, requireUat } from './lib/config.mjs';
+import { ODOO_URL, BU_ODOO_PREFIX, requireUat, odooCredentials } from './lib/config.mjs';
 import { loadEnv, log, makeRunId } from './lib/util.mjs';
 import { appendConfirmLog } from './lib/execution-log.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
@@ -37,9 +37,7 @@ requireUat('odoo_po_confirm.mjs');
 const __dir = dirname(fileURLToPath(import.meta.url));
 loadEnv(join(__dir, '.env'));
 
-const USERNAME = process.env.ODOO_USERNAME;
-const PASSWORD = process.env.ODOO_PASSWORD;
-if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not set in .env');
+const { username: USERNAME, password: PASSWORD } = odooCredentials();
 
 const PROFILES = {
   supply:   { buyer: 'SUPPLY_BUYER',   workingDays: 15 },

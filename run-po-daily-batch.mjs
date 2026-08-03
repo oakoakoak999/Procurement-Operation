@@ -9,8 +9,11 @@
  *   node run-po-daily-batch.mjs [--date YYYY-MM-DD] [--headless]
  *                               [--skip-print] [--skip-split]
  *                               [--max-parallel=2] [--bu=PMDH,PPAT]
+ *                               [--env=prod]
  *
  * --date/--headless/--skip-print/--skip-split are passed through to every run.
+ * --env reaches the lanes as ODOO_ENV (see runBU), so every lane targets the
+ * same SmartERP as the batch — a prod batch must not fan out into UAT lanes.
  * --date defaults to today (in the pipeline). Lane starts are staggered so
  * logins don't hit Odoo in the same instant.
  *
@@ -32,7 +35,7 @@ import { spawn, spawnSync } from 'child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, createWriteStream } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
-import { BU_ORDER_FOLDERS } from './lib/config.mjs';
+import { BU_ORDER_FOLDERS, ODOO_ENV } from './lib/config.mjs';
 import { makeRunId } from './lib/util.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
 import { appendPoDailyLog } from './lib/execution-log.mjs';
@@ -63,7 +66,10 @@ function runBU(bu) {
     const logStream  = createWriteStream(join(RUN_DIR, `${bu}.log`));
     const child = spawn(process.execPath, ['po-daily-pipeline.mjs', '--bu', bu, ...PASS_ARGS], {
       cwd: __dir,
-      env: { ...process.env, PODAILY_RESULT_FILE: resultFile },
+      // ODOO_ENV rather than a --env pass-through flag: config.mjs accepts both
+      // --env=prod and --env prod, and the env var can't be dropped by argv
+      // re-parsing. A lane has no --env of its own, so this is what it reads.
+      env: { ...process.env, PODAILY_RESULT_FILE: resultFile, ODOO_ENV },
     });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);

@@ -28,7 +28,7 @@ import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { selectPRRows, executeOdooAction } from './lib/pr-row-actions.mjs';
-import { ODOO_URL, BU_ODOO_PREFIX, requireUat } from './lib/config.mjs';
+import { ODOO_URL, BU_ODOO_PREFIX, requireUat, odooCredentials } from './lib/config.mjs';
 import { loadEnv, log } from './lib/util.mjs';
 import { appendDecision } from './lib/decision-log.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
@@ -47,9 +47,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 loadEnv(join(__dir, '.env'));
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const USERNAME        = process.env.ODOO_USERNAME;
-const PASSWORD        = process.env.ODOO_PASSWORD;
-if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not set in .env');
+const { username: USERNAME, password: PASSWORD } = odooCredentials();
 
 const PROFILES = {
   supply:   { buyer: 'SUPPLY_BUYER' },

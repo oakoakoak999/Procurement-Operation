@@ -37,7 +37,7 @@ import { join, dirname, extname } from 'path';
 import { homedir } from 'os';
 import { createServer } from 'http';
 import { createHash } from 'crypto';
-import { ODOO_URL, ODOO_ENV, BU_ODOO_PREFIX, BU_ORDER_FOLDERS } from './lib/config.mjs';
+import { ODOO_URL, ODOO_ENV, BU_ODOO_PREFIX, BU_ORDER_FOLDERS, odooCredentials } from './lib/config.mjs';
 import { loadEnv, log, makeRunId, cfAccessHeaders } from './lib/util.mjs';
 import { selectDatabase, login, switchBU } from './lib/odoo-nav.mjs';
 
@@ -79,9 +79,6 @@ const ORDER_FOLDER    = _folderIdx !== -1
   ? process.argv[_folderIdx + 1]
   : (BU_ORDER_FOLDERS[TARGET_BU_CODE] ?? (() => { throw new Error(`No Drive folder configured for BU "${TARGET_BU_CODE}"`); })());
 
-const USERNAME = process.env.ODOO_USERNAME;
-const PASSWORD = process.env.ODOO_PASSWORD;
-
 const WARNINGS = [];
 function logWarning(stage, msg) {
   WARNINGS.push(`[${stage}] ${msg}`);
@@ -113,7 +110,9 @@ async function withRetry(name, fn) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function stagePrint() {
-  if (!USERNAME || !PASSWORD) throw new Error('ODOO_USERNAME / ODOO_PASSWORD not set in .env');
+  // Resolved here rather than at module scope so --skip-print still works on a
+  // machine that has no Odoo credentials for this environment at all.
+  const { username: USERNAME, password: PASSWORD } = odooCredentials();
 
   log('PRINT', 'Launching Chrome...');
   const browser = await chromium.launch({ headless: HEADLESS, channel: 'chrome' });

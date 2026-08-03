@@ -2,6 +2,7 @@
   "odooUrl": "https://your-odoo-host.example.com",
   "odooUrlProd": "https://your-production-odoo-host.example.com (OPTIONAL - required only for --env prod; PO-daily is the only pipeline cleared to use it)",
   "odooUrlGha": "https://gha-your-odoo-host.example.com (OPTIONAL — used only when GITHUB_ACTIONS=true; omit on a human PC)",
+  "odooUrlGhaProd": "https://gha-your-production-odoo-host.example.com (OPTIONAL — the production gha door; used only when GITHUB_ACTIONS=true and --env prod)",
   "refSheet": {
     "id": "google-sheet-id-of-vendor-min-order-reference",
     "gid": "0"

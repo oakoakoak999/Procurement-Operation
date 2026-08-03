@@ -23,7 +23,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { createWriteStream } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
-import { BU_ODOO_PREFIX } from './lib/config.mjs';
+import { BU_ODOO_PREFIX, ODOO_ENV } from './lib/config.mjs';
 import { makeRunId } from './lib/util.mjs';
 import { syncMemoryFolder } from './lib/memory-sync.mjs';
 import { appendExecutionLog } from './lib/execution-log.mjs';
@@ -32,7 +32,7 @@ import { appendEpisodeRow } from './lib/episode-index.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-const USAGE = 'Usage: node run-batch.mjs <profile> [--generate] [--test] [--headless] [--max-parallel=N] [--bu=CODE,CODE]';
+const USAGE = 'Usage: node run-batch.mjs <profile> [--generate] [--test] [--headless] [--max-parallel=N] [--bu=CODE,CODE] [--env=prod]';
 const PROFILE = process.argv[2];
 if (!PROFILE || PROFILE.startsWith('--')) throw new Error(USAGE);
 
@@ -53,7 +53,12 @@ function runBU(bu) {
     const logStream  = createWriteStream(join(RUN_DIR, `${bu}.log`));
     const child = spawn(process.execPath, ['odoo_pr_to_po.mjs', PROFILE, bu, ...PASS_FLAGS], {
       cwd: __dir,
-      env: { ...process.env, PR2PO_RESULT_FILE: resultFile },
+      // ODOO_ENV rather than a --env pass-through flag: config.mjs accepts both
+      // --env=prod and --env prod, and the env var can't be dropped by argv
+      // re-parsing. A lane has no --env of its own, so this is what it reads.
+      // PR2PO is requireUat()-blocked, so --env prod makes every lane refuse
+      // loudly instead of quietly doing the batch against UAT.
+      env: { ...process.env, PR2PO_RESULT_FILE: resultFile, ODOO_ENV },
     });
     child.stdout.pipe(logStream);
     child.stderr.pipe(logStream);
