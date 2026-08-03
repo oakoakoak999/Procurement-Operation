@@ -5,16 +5,25 @@ name: PO-Daily batch (manual)
 # or pass one code for a single-BU run. Leave `date` blank for today.
 #
 # Proves the PO-Daily chain works on GitHub Actions: Windows runner -> materialize
-# config/tokens from secrets -> headless Chrome -> Odoo login (UAT via odooUrlGha,
-# auto-selected on GITHUB_ACTIONS) -> print the day's POs -> split per-vendor ->
-# upload to the Google Shared Drive.
+# config/tokens from secrets -> headless Chrome -> Odoo login (via odooUrlGha or
+# odooUrlGhaProd, auto-selected on GITHUB_ACTIONS) -> print the day's POs ->
+# split per-vendor -> upload to the Google Shared Drive.
 #
 # NO dry-run: PO-daily always takes real actions. The Drive upload de-dups
 # against files already there, so a re-run skips existing names rather than
 # duplicating — that is the safety net, not a --test mode. Use deliberately.
+#
+# environment=prod prints and uploads REAL production POs, and Drive dedup is no
+# safety net there because the prod folders start empty. Run the connectivity
+# probe against prod first, then a single BU and a single date.
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Which SmartERP — prod prints REAL production POs"
+        type: choice
+        options: [uat, prod]
+        default: uat
       bu:
         description: "BU code (e.g. PSV), or blank for ALL order-folder BUs"
         default: ""
@@ -70,14 +79,21 @@ jobs:
           # Runners are UTC; mint RUN_IDs and execution-log timestamps in
           # Bangkok so they match the +07 heading the log writer emits.
           TZ: Asia/Bangkok
+          # Both environments' credentials are exported; config.mjs picks the pair
+          # that matches --env. Neither falls back to the other.
           ODOO_USERNAME: ${{ secrets.ODOO_USERNAME }}
           ODOO_PASSWORD: ${{ secrets.ODOO_PASSWORD }}
+          ODOO_USERNAME_PROD: ${{ secrets.ODOO_USERNAME_PROD }}
+          ODOO_PASSWORD_PROD: ${{ secrets.ODOO_PASSWORD_PROD }}
           GDRIVE_CLIENT_ID: ${{ vars.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           # Cloudflare Access service token — opens the gha door from the cloud runner.
           # No-op locally (cfAccessHeaders() returns {} when these are unset).
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          CF_ACCESS_CLIENT_ID_PROD: ${{ secrets.CF_ACCESS_CLIENT_ID_PROD }}
+          CF_ACCESS_CLIENT_SECRET_PROD: ${{ secrets.CF_ACCESS_CLIENT_SECRET_PROD }}
+          ENVIRONMENT: ${{ inputs.environment }}
           BU: ${{ inputs.bu }}
           DATE: ${{ inputs.date }}
           MAXP: ${{ inputs.max_parallel }}
@@ -86,8 +102,11 @@ jobs:
           # one code = single BU. Blank date = today (the pipeline defaults it).
           if [ -n "$BU" ]; then BU_FLAG="--bu=$BU"; MAXP=1; fi
           if [ -n "$DATE" ]; then DATE_FLAG="--date $DATE"; fi
-          echo "[RUN] bu=${BU:-ALL} | date=${DATE:-today} | max-parallel=$MAXP"
-          node run-po-daily-batch.mjs $BU_FLAG $DATE_FLAG --headless --max-parallel="$MAXP"
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            echo "[RUN] *** PRODUCTION *** — these are real POs"
+          fi
+          echo "[RUN] env=$ENVIRONMENT | bu=${BU:-ALL} | date=${DATE:-today} | max-parallel=$MAXP"
+          node run-po-daily-batch.mjs $BU_FLAG $DATE_FLAG --headless --max-parallel="$MAXP" --env="$ENVIRONMENT"
 
       - name: Upload run summary (structured files only)
         # NOT runs/** — the raw per-BU .log is unfiltered child stderr, and

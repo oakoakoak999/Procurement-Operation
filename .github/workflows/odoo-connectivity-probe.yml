@@ -1,39 +1,63 @@
 name: Odoo connectivity probe
 
 # Answers the gating question for running the batch on Actions:
-# can a GitHub-hosted (cloud) runner reach Odoo UAT through the Cloudflare-gated
+# can a GitHub-hosted (cloud) runner reach Odoo through the Cloudflare-gated
 # "gha" door using the CF Access service token?
-# Tests odooUrlGha from the CONFIG_JSON secret, sending the CF_ACCESS_* service
-# token as CF-Access-Client-Id / CF-Access-Client-Secret headers.
+# Tests odooUrlGha / odooUrlGhaProd from the CONFIG_JSON secret, sending the
+# matching CF_ACCESS_* service token as CF-Access-Client-Id / -Secret headers.
 # Prints only DNS/HTTP status + a token verdict — never the URL or the token.
+#
+# Run this against prod BEFORE the PO-daily batch: it proves the prod door and
+# token without printing, splitting or uploading anything.
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Which SmartERP to probe'
+        type: choice
+        options: [uat, prod]
+        default: uat
 
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Reach Odoo UAT via the gha door?
+      - name: Reach Odoo via the gha door?
         env:
+          ENVIRONMENT: ${{ inputs.environment }}
           CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          CF_ACCESS_CLIENT_ID_PROD: ${{ secrets.CF_ACCESS_CLIENT_ID_PROD }}
+          CF_ACCESS_CLIENT_SECRET_PROD: ${{ secrets.CF_ACCESS_CLIENT_SECRET_PROD }}
         run: |
-          url=$(jq -r '.odooUrlGha // empty' <<< "$CONFIG_JSON" 2>/dev/null)
+          # Same split the scripts use: UAT is the unsuffixed pair, prod adds
+          # _PROD, and neither falls back to the other.
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            key=odooUrlGhaProd
+            cf_id="$CF_ACCESS_CLIENT_ID_PROD"
+            cf_secret="$CF_ACCESS_CLIENT_SECRET_PROD"
+          else
+            key=odooUrlGha
+            cf_id="$CF_ACCESS_CLIENT_ID"
+            cf_secret="$CF_ACCESS_CLIENT_SECRET"
+          fi
+          echo "probing environment: $ENVIRONMENT (CONFIG_JSON key: $key)"
+          url=$(jq -r ".$key // empty" <<< "$CONFIG_JSON" 2>/dev/null)
           if [ -z "$url" ]; then
-            echo "no odooUrlGha in CONFIG_JSON — do checklist item 3 (add the gha URL to the CONFIG_JSON secret) first"
+            echo "no $key in CONFIG_JSON — add the gha URL to the CONFIG_JSON secret first"
             exit 1
           fi
-          if [ -z "$CF_ACCESS_CLIENT_ID" ] || [ -z "$CF_ACCESS_CLIENT_SECRET" ]; then
-            echo "WARNING: CF_ACCESS_CLIENT_ID/SECRET not set — the gha door will 403 until checklist item 2 is done"
+          if [ -z "$cf_id" ] || [ -z "$cf_secret" ]; then
+            echo "WARNING: CF Access token for $ENVIRONMENT not set — the gha door will 403"
           fi
           host=$(printf '%s' "$url" | sed -E 's#^https?://##' | cut -d/ -f1)
           echo "--- DNS ---"
           if getent hosts "$host" >/dev/null 2>&1; then echo "resolves"; else echo "DOES NOT RESOLVE (internal-only host)"; fi
           echo "--- TCP/HTTP with CF Access token (20s timeout) ---"
           code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 \
-            -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
-            -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+            -H "CF-Access-Client-Id: $cf_id" \
+            -H "CF-Access-Client-Secret: $cf_secret" \
             "$url/" 2>/dev/null) || code="000"
           echo "--- VERDICT (HTTP $code) ---"
           case "$code" in
