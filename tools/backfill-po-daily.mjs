@@ -16,7 +16,7 @@
  * Usage:
  *   node tools/backfill-po-daily.mjs --bu PSV --from 2026-01-01 --to 2026-06-30
  *                                    [--headless] [--clean] [--dry-run]
- *                                    [--max-parallel 2]
+ *                                    [--max-parallel 2] [--env=prod]
  *
  *   --clean    delete that date's printed page PDFs + split dir after a
  *              successful upload. Off by default — a 6-month PSV backfill is
@@ -36,6 +36,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, createWrite
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { ODOO_ENV } from '../lib/config.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -72,7 +73,7 @@ const LANES    = Math.max(1, Number(arg('--max-parallel', 2)) || 2);
 const CHILD_FOLDER_CONCURRENCY = String(Number(process.env.PO_FOLDER_CONCURRENCY) || 2);
 
 if (!BU || !FROM || !TO) {
-  console.error('usage: node tools/backfill-po-daily.mjs --bu PSV --from 2026-01-01 --to 2026-06-30 [--headless] [--clean] [--dry-run]');
+  console.error('usage: node tools/backfill-po-daily.mjs --bu PSV --from 2026-01-01 --to 2026-06-30 [--headless] [--clean] [--dry-run] [--env=prod]');
   process.exit(2);
 }
 
@@ -93,8 +94,13 @@ function dateRange(from, to) {
 }
 
 const DATES     = dateRange(FROM, TO);
-const RUN_DIR   = join(ROOT, 'runs', `backfill-${BU}-${FROM}-${TO}`);
-const STATE     = join(ROOT, 'runs', `backfill-${BU}-${FROM}-${TO}.json`);
+// The state file's identity is BU + range + ENVIRONMENT: the same dates hold
+// different POs in UAT and production, so a prod pass must not read a UAT pass's
+// "already done" marks. Only prod is suffixed — the existing UAT state files on
+// disk keep their names and stay resumable.
+const TAG       = ODOO_ENV === 'uat' ? '' : `-${ODOO_ENV}`;
+const RUN_DIR   = join(ROOT, 'runs', `backfill-${BU}-${FROM}-${TO}${TAG}`);
+const STATE     = join(ROOT, 'runs', `backfill-${BU}-${FROM}-${TO}${TAG}.json`);
 const DOWNLOADS = join(homedir(), 'Downloads');
 
 if (DRY) {
@@ -122,6 +128,10 @@ function runDate(date) {
         ...process.env,
         PODAILY_RESULT_FILE: resultFile,
         PO_FOLDER_CONCURRENCY: CHILD_FOLDER_CONCURRENCY,
+        // ODOO_ENV rather than a --env pass-through flag: a child cannot see this
+        // process's argv, so without this every date would silently run against
+        // UAT while the parent reported a prod backfill.
+        ODOO_ENV,
       },
     });
     child.stdout.pipe(logStream);
@@ -147,7 +157,7 @@ function cleanLocal(date) {
 
 (async () => {
   const todo = DATES.filter(d => !isDone(d));
-  console.log(`[BACKFILL] ${BU} | ${FROM} → ${TO} | ${DATES.length} date(s), ${todo.length} to run, ${DATES.length - todo.length} already done`);
+  console.log(`[BACKFILL] ${BU} | ${FROM} → ${TO} | env=${ODOO_ENV} | ${DATES.length} date(s), ${todo.length} to run, ${DATES.length - todo.length} already done`);
   console.log(`[BACKFILL] state: ${STATE} | ${LANES} date(s) in flight, ${CHILD_FOLDER_CONCURRENCY} folder(s) each`);
   if (!todo.length) { console.log('[BACKFILL] nothing to do'); return; }
 

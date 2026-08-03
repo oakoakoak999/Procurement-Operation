@@ -21,6 +21,7 @@
  *   node tools/backfill-queue.mjs --from 2026-01-01 --to 2026-06-30
  *                                 [--headless] [--clean] [--max-parallel 2]
  *                                 [--bus PSV,PPNP] [--skip PSV] [--dry-run]
+ *                                 [--env=prod]
  *
  *   --bus    only these BUs, in this order. Default: all configured BUs.
  *   --skip   exclude these BUs (e.g. one already backfilled).
@@ -32,7 +33,7 @@ import { spawn } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
-import { BU_ODOO_PREFIX } from '../lib/config.mjs';
+import { BU_ODOO_PREFIX, ODOO_ENV } from '../lib/config.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -66,11 +67,14 @@ if (unknown.length) throw new Error(`unknown or blocked BU(s): ${unknown.join(',
 const BUS = (only.length ? only : ALL).filter(b => !skipped.has(b));
 if (!BUS.length) throw new Error('no BUs left to run after --bus/--skip');
 
-const STATE = join(ROOT, 'runs', `backfill-queue-${FROM}-${TO}.json`);
+// Suffixed by environment for the same reason as the per-BU state file: a prod
+// pass and a UAT pass over one range are different jobs. UAT keeps the bare name.
+const TAG   = ODOO_ENV === 'uat' ? '' : `-${ODOO_ENV}`;
+const STATE = join(ROOT, 'runs', `backfill-queue-${FROM}-${TO}${TAG}.json`);
 
 if (DRY) {
   console.log(`${BUS.length} BU(s): ${BUS.join(' ')}`);
-  console.log(`range: ${FROM} → ${TO} | lanes: ${LANES} | headless: ${HEADLESS} | clean: ${CLEAN}`);
+  console.log(`range: ${FROM} → ${TO} | env: ${ODOO_ENV} | lanes: ${LANES} | headless: ${HEADLESS} | clean: ${CLEAN}`);
   process.exit(0);
 }
 
@@ -90,7 +94,9 @@ function runBu(bu) {
       ...(HEADLESS ? ['--headless'] : []),
       ...(CLEAN ? ['--clean'] : []),
     ];
-    spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' })
+    // ODOO_ENV rather than a --env pass-through flag: the child cannot see this
+    // process's argv, so without this a prod queue would run every BU on UAT.
+    spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ODOO_ENV } })
       .on('close', code => resolve(code));
   });
 }
@@ -98,7 +104,7 @@ function runBu(bu) {
 // Read the per-BU state file the child wrote, so the queue summary reports real
 // date counts instead of just an exit code.
 function buTally(bu) {
-  const f = join(ROOT, 'runs', `backfill-${bu}-${FROM}-${TO}.json`);
+  const f = join(ROOT, 'runs', `backfill-${bu}-${FROM}-${TO}${TAG}.json`);
   if (!existsSync(f)) return null;
   try {
     const dates = Object.values(JSON.parse(readFileSync(f, 'utf8')).dates || {});
@@ -115,7 +121,7 @@ function buTally(bu) {
 
 (async () => {
   const started = Date.now();
-  console.log(`[QUEUE] ${BUS.length} BU(s) | ${FROM} → ${TO} | ${LANES} date-lane(s) each`);
+  console.log(`[QUEUE] ${BUS.length} BU(s) | ${FROM} → ${TO} | env=${ODOO_ENV} | ${LANES} date-lane(s) each`);
   console.log(`[QUEUE] order: ${BUS.join(' ')}`);
   console.log(`[QUEUE] state: ${STATE}\n`);
 
