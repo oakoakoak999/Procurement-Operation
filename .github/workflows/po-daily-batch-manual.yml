@@ -18,9 +18,11 @@ name: PO-Daily batch (scheduled + manual)
 # skipped 149 of 151 PSV files and uploaded only the new one. That was not true
 # when prod was first cut over, which is why this warning used to say otherwise.
 #
-# If the runner ever stops reaching Odoo, run the connectivity probe before
-# anything else: it answers in 40 seconds what a failed batch takes 3 minutes to
-# hint at, and it distinguishes a token problem from a login problem.
+# This is the only workflow in the repo, by decision: it is the one pipeline
+# cleared for production. PR2PO, Confirm-PO and the connectivity probe were
+# removed rather than left idle -- the first two are blocked from prod by
+# requireUat() anyway, since they write to Odoo. All three are in git history if
+# a cloud path for them is ever wanted again.
 on:
   # Times are UTC; Thailand is UTC+7 year-round with no DST, so the offset is a
   # constant 7 hours. GitHub fires scheduled runs late under load -- 5 to 30
