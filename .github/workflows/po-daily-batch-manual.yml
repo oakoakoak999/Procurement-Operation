@@ -25,8 +25,9 @@ name: PO-Daily batch (scheduled + manual)
 # a cloud path for them is ever wanted again.
 on:
   # Times are UTC; Thailand is UTC+7 year-round with no DST, so the offset is a
-  # constant 7 hours. GitHub fires scheduled runs late under load -- 5 to 30
-  # minutes is normal -- so treat these as approximate. Every day including
+  # constant 7 hours. GitHub fires scheduled runs late under load -- around an
+  # hour is normal and 3 hours has been measured here, so treat every time below
+  # as a lower bound, not a schedule. Every day including
   # weekends: POs are raised on Saturdays and Sundays (measured, not assumed).
   schedule:
     # Intraday sweeps: 09:30, 10:30, 11:30, 13:30, 15:30, 16:30 ICT.
@@ -34,7 +35,21 @@ on:
     # repeating is latency -- how soon a PO's PDF reaches Drive -- not coverage.
     # A full 18-BU sweep measured ~14 minutes, well inside the 1-hour spacing,
     # so consecutive runs cannot overlap.
-    - cron: '30 2,3,4,6,8,9 * * *'
+    #
+    # One slot per line rather than the equivalent '30 2,3,4,6,8,9 * * *'. That
+    # combined form dropped slots: GitHub folds a still-pending run into the next
+    # occurrence of the SAME cron string, so any queue delay beyond the 1-hour
+    # spacing eats a sweep -- on 04 Aug delays of ~178 and ~198 min left 2 runs
+    # out of 4 due slots. Separate entries are separate schedules and do not fold
+    # into each other: that morning the 00:30 and 02:30 entries both produced a
+    # run despite overlapping. A combined expression also cannot say which slot
+    # fired, since github.event.schedule reports the string, not the occurrence.
+    - cron: '30 2 * * *'
+    - cron: '30 3 * * *'
+    - cron: '30 4 * * *'
+    - cron: '30 6 * * *'
+    - cron: '30 8 * * *'
+    - cron: '30 9 * * *'
     # Yesterday sweep, 07:30 ICT. Closes the gap the last intraday sweep leaves
     # open: anything raised between 16:30 and midnight, plus edits to POs that
     # were already uploaded (the pipeline replaces on content-hash change).
@@ -140,9 +155,11 @@ jobs:
           BU: ${{ inputs.bu }}
           DATE: ${{ inputs.date }}
           MAXP: ${{ inputs.max_parallel || '2' }}
-          # Which cron fired, blank on a manual run. This is the only way to tell
-          # the two schedules apart -- they share one workflow so they stay in
-          # step with each other.
+          # Which cron fired, blank on a manual run. The only way to tell the
+          # schedule entries apart -- they share one workflow so they stay in
+          # step with each other. With the intraday slots listed one per line
+          # this names the exact slot, so a dropped one is visible in the log
+          # rather than inferred from firing times.
           SCHEDULE: ${{ github.event.schedule }}
         run: |
           # The 00:30 UTC entry is the yesterday sweep. TZ is Asia/Bangkok (set
