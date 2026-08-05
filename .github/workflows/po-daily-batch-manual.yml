@@ -30,7 +30,21 @@ on:
   # as a lower bound, not a schedule. Every day including
   # weekends: POs are raised on Saturdays and Sundays (measured, not assumed).
   schedule:
-    # Intraday sweeps: 09:30, 10:30, 11:30, 13:30, 15:30, 16:30 ICT.
+    # Intraday sweeps: 08:30, 09:30, 10:30, 12:30, 14:30, 15:30 ICT.
+    #
+    # These are each an hour earlier than the times the sweeps are actually
+    # WANTED (09:30, 10:30, 11:30, 13:30, 15:30, 16:30 ICT). That is deliberate
+    # delay compensation, not a change to the operating schedule: GitHub
+    # consistently fires these late by roughly an hour, so booking an hour early
+    # lands the run near the intended time. The target times are unchanged --
+    # only the booking moved. Do not "correct" these back without also removing
+    # the assumption that a run arrives late.
+    #
+    # It is compensation for the TYPICAL delay, not a guarantee. The delay is not
+    # bounded: ~3 hours has been measured here. A slot that happens to fire on
+    # time now runs an hour ahead of the old behaviour, which is harmless -- an
+    # early sweep just finds fewer POs and the next one picks them up.
+    #
     # Each sweep is a snapshot of what exists at that moment, so the point of
     # repeating is latency -- how soon a PO's PDF reaches Drive -- not coverage.
     # A full 18-BU sweep measured ~14 minutes, well inside the 1-hour spacing,
@@ -44,15 +58,25 @@ on:
     # into each other: that morning the 00:30 and 02:30 entries both produced a
     # run despite overlapping. A combined expression also cannot say which slot
     # fired, since github.event.schedule reports the string, not the occurrence.
+    - cron: '30 1 * * *'
     - cron: '30 2 * * *'
     - cron: '30 3 * * *'
-    - cron: '30 4 * * *'
-    - cron: '30 6 * * *'
+    - cron: '30 5 * * *'
+    - cron: '30 7 * * *'
     - cron: '30 8 * * *'
-    - cron: '30 9 * * *'
     # Yesterday sweep, 07:30 ICT. Closes the gap the last intraday sweep leaves
-    # open: anything raised between 16:30 and midnight, plus edits to POs that
+    # open: anything raised between 15:30 and midnight, plus edits to POs that
     # were already uploaded (the pipeline replaces on content-hash change).
+    #
+    # Deliberately NOT shifted an hour earlier with the intraday sweeps. The
+    # runner's shell reports UTC despite TZ=Asia/Bangkok, so `date -d yesterday`
+    # is a UTC calculation, evaluated when the run EXECUTES. It agrees with the
+    # ICT calendar date only while execution lands at or after 00:00 UTC.
+    # Booking this at 06:30 ICT would put it at 23:30 UTC the PREVIOUS day and
+    # sweep the day before yesterday. Queue delay cannot rescue that -- it is
+    # the nominal slot that would be wrong, and a delay is not guaranteed.
+    # Delay is only ever safe in this direction: it pushes execution later,
+    # never earlier, so 00:30 UTC firing late stays on the correct date.
     - cron: '30 0 * * *'
   workflow_dispatch:
     inputs:
