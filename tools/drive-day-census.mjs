@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-// Throwaway: PDF count per BU per day for a set of dates, straight from Drive.
-// Usage: node tools/tmp-daycount.mjs --dates 2026-08-03,2026-08-04,2026-08-05
+// PDF count per BU per day for a set of dates, read straight from Drive.
+// Each day is also broken down by upload date (Drive createdTime), which is what
+// separates an intraday sweep from the next morning's `30 0` yesterday sweep.
+// Read-only. Promoted from a throwaway (tmp-daycount.mjs) on 2026-08-05.
+// Usage: node tools/drive-day-census.mjs --dates 2026-08-03,2026-08-04,2026-08-05
 
 import { google } from 'googleapis';
 import { readFileSync } from 'fs';
