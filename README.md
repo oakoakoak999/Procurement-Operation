@@ -32,7 +32,12 @@ That last click is the one action that **cannot be undone**. The code treats it 
 1. Logs into Odoo and finds the target day's POs for the chosen BU. "Target day" is today unless `--date` says otherwise. Two filters decide what counts: **PO Send to Vendor is Completed or Re-send PO**, *and* **Doc Approve Status is Approved**.
 2. Prints them into PDF files.
 3. Cuts the big PDFs into one small PDF per PO, reading the PO number and vendor name off each page.
-4. Uploads each PO's PDF to Google Drive, into `<BU order folder>\YYYY\MM.MonthName\DD\MM\YYYY\<vendor>\`.
+4. Uploads each PO's PDF to Google Drive, filed as
+   `<BU order folder>` → `2026` → `08.August` → `03/08/2026` → `<vendor>`.
+   Note the day level is a **single folder whose name contains slashes**
+   (`03/08/2026`), not three nested folders — Drive allows that, and scripts
+   that walk this tree have to build the name exactly that way or they report
+   the day as missing.
 
 **PO Daily has no rehearsal mode.** What makes re-running it safe instead is that every upload is content-hash checked — a PO already in Drive is skipped, not duplicated. So running the same day twice costs time, not correctness.
 
