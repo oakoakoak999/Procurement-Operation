@@ -30,7 +30,7 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
                 'July', 'August', 'September', 'October', 'November', 'December'];
 const [yy, mm, dd] = DATE.split('-');
 const Y = yy;
-const M = MONTHS[Number(mm) - 1];
+const M = `${mm}.${MONTHS[Number(mm) - 1]}`;   // "08.August" — stageUpload prefixes the number
 const D = `${dd}/${mm}/${yy}`;
 
 const TOKEN = join(ROOT, '.gdrive-po-token.json');
