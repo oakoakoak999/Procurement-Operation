@@ -69,4 +69,5 @@
 | 2026-08-06 | 20260806-0349 | PO-Daily batch 2026-08-05 | SUCCESS | 20 BU · 18 with POs · 22 printed · 61 uploaded · 896 dup-skip | 2 BU had no POs |
 | 2026-08-06 | 20260806-0403 | PO-Daily batch 2026-08-05 | SUCCESS | 20 BU · 18 with POs · 22 printed · 0 uploaded · 957 dup-skip | 2 BU had no POs |
 | 2026-08-06 | 20260806-0446 | PO-Daily batch 6 Aug 2026 | SUCCESS | 20 BU · 3 with POs · 3 printed · 3 uploaded · 3 dup-skip | 17 BU had no POs |
+| 2026-08-06 | 20260806-0531 | PO-Daily batch 6 Aug 2026 | SUCCESS | 20 BU · 3 with POs · 3 printed · 1 uploaded · 6 dup-skip | 17 BU had no POs |
 
