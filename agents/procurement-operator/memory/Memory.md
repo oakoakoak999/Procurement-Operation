@@ -65,4 +65,5 @@
 | 2026-08-05 | 20260805-0801 | PO-Daily batch 5 Aug 2026 | SUCCESS | 20 BU · 17 with POs · 19 printed · 338 uploaded · 413 dup-skip | 3 BU had no POs |
 | 2026-08-05 | 20260805-1005 | PO-Daily batch 5 Aug 2026 | SUCCESS | 20 BU · 18 with POs · 22 printed · 137 uploaded · 2 replaced · 748 dup-skip | 2 PO(s) re-issued and replaced |
 | 2026-08-05 | 20260805-1101 | PO-Daily batch 5 Aug 2026 | SUCCESS | 20 BU · 18 with POs · 22 printed · 12 uploaded · 886 dup-skip | 2 BU had no POs |
+| 2026-08-06 | 20260806-0322 | PO-Daily batch 6 Aug 2026 | SUCCESS | 20 BU · 1 with POs · 1 printed · 3 uploaded · 0 dup-skip | 19 BU had no POs |
 
